@@ -27,7 +27,7 @@ def parse_args():
                         metavar='path', default='.', help='set output directory (default .)')
     parser.add_argument('files', metavar='file.pr', type=str, nargs='*',
                         help='SDL file(s)')
-    return vars(parser.parse_args())
+    return parser.parse_args()
 
 
 def sdl2nim() -> int:
