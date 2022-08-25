@@ -1,3 +1,4 @@
+import imp
 import inspect
 import re
 
@@ -7,15 +8,13 @@ import opengeode
 from functools import singledispatch
 from opengeode import ogAST, Helper
 
+from .utils import not_implemented_error
+
 from typing import List, Tuple
 
 LOG = logging.getLogger(__name__)
 
-__all__ = ['expression', 'not_implemented_error']
-
-
-def not_implemented_error():
-    raise NotImplementedError(f"{inspect.stack()[1][3]} is not implemented yet")
+__all__ = ['expression']
 
 
 @singledispatch
