@@ -48,7 +48,7 @@ def sdl2nim() -> int:
     if errors:
         return 1
 
-    # generate NIM code
+    # generate IF code
     try:
         NimGenerator.generate(ast.processes[0], output_dir=options.output_dir)
     except (TypeError, ValueError, NameError) as err:
@@ -56,7 +56,7 @@ def sdl2nim() -> int:
         err = err.encode('utf-8')
         LOG.error(str(err))
         LOG.error(str(traceback.format_exc()))
-        LOG.error('NIM code generation failed')
+        LOG.error('IF code generation failed')
         return 1
 
     return 0
@@ -64,4 +64,4 @@ def sdl2nim() -> int:
 
 if __name__ == "__main__":
 
-    ret = sdl2nim()
+    args = parse_args()
