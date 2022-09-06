@@ -7,7 +7,7 @@ import logging
 import traceback
 
 import opengeode
-from . import NimGenerator
+from . import NimGenerator, utils
 
 LOG = logging.getLogger(__name__)
 

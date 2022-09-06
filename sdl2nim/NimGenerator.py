@@ -8,7 +8,7 @@ import opengeode
 from functools import singledispatch
 from opengeode import ogAST, Helper
 
-from .utils import not_implemented_error
+from .utils import not_implemented_error, traceability
 from .Expressions import expression
 
 from typing import List, Tuple
@@ -44,7 +44,12 @@ def _task_assign(task, **kwargs):
 
 @generate.register(ogAST.TaskInformalText)
 def _task_informal_text(task, **kwargs):
-    not_implemented_error()
+    ''' Generate Nim comments for informal text '''
+    code = []
+    if task.comment:
+        code.extend(traceability(task.comment))
+    code.extend(['-- ' + text.replace('\n', '\n-- ') for text in task.elems])
+    return code, []
 
 @generate.register(ogAST.TaskForLoop)
 def _task_forloop(task, **kwargs):
