@@ -48,20 +48,20 @@ def type_name(a_type, prefix=''):
     elif a_type.kind == 'BooleanType':
         return 'bool'
     elif a_type.kind.startswith('Integer32'):
-        return 'int32'
+        return 'asn1SccSint32'
     elif a_type.kind.startswith('IntegerU8'):
-        return 'int8'
+        return 'asn1byte'
     elif a_type.kind.startswith('Integer'):
         if float(a_type.Min) >= 0:
             return 'Asn1UInt'
         else:
             return 'Asn1Int'
     elif a_type.kind == 'RealType':
-        return 'Asn1Real'
+        return 'asn1Real'
     elif a_type.kind.endswith('StringType'):
         return 'string'
     elif a_type.kind == 'ChoiceEnumeratedType':
-        return 'int16'
+        return 'asn1SccUint32'
     elif a_type.kind == 'StateEnumeratedType':
         return prefix
     elif a_type.kind == 'EnumeratedType':

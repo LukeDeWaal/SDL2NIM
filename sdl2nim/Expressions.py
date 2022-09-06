@@ -21,6 +21,7 @@ VARIABLES = {}
 LOCAL_VAR = {}
 TYPES = None
 PROCEDURES = []
+SEPARATOR = "___"
 
 def find_basic_type(a_type):
     return __find_basic_type(TYPES, a_type)
@@ -166,7 +167,7 @@ def _prim_index(prim, **kwargs):
     ro = kwargs.get("readonly", 0)
     receiver = prim.value[0]
 
-    receiver_stms, ada_string, receiver_decl = expression(receiver, readonly=ro)
+    receiver_stms, nim_string, receiver_decl = expression(receiver, readonly=ro)
     stmts.extend(receiver_stms)
     local_decl.extend(receiver_decl)
 
@@ -176,15 +177,48 @@ def _prim_index(prim, **kwargs):
         idx_string = int(idx_string)
     else:
         idx_string = f'({idx_string}).asn1SccUint'
-    ada_string += f'[{idx_string}]'
+    nim_string += f'[{idx_string}]'
     stmts.extend(idx_stmts)
     local_decl.extend(idx_var)
 
-    return stmts, str(ada_string), local_decl
+    return stmts, str(nim_string), local_decl
 
 @expression.register(ogAST.PrimSubstring)
 def _prim_substring(prim, **kwargs):
-    not_implemented_error()
+    ''' Generate expression for SEQOF/OCT.STRING substrings, e.g. foo(1,2) '''
+    stmts, nim_string, local_decl = [], '', []
+    ro = kwargs.get("readonly", 0)
+
+    receiver = prim.value[0]
+    receiver_stms, receiver_string, receiver_decl = expression(receiver,
+                                                               readonly=ro)
+    nim_string = receiver_string
+    stmts.extend(receiver_stms)
+    local_decl.extend(receiver_decl)
+
+    r1_stmts, r1_string, r1_local = expression(prim.value[1]['substring'][0],
+                                               readonly=ro)
+    r2_stmts, r2_string, r2_local = expression(prim.value[1]['substring'][1],
+                                               readonly=ro)
+
+    # SDL starts indexes at 0, ASN1 Nim types at 0
+    # SDL ends at final - 1, Nim at final, thus change range from .. to ..<
+    if str.isnumeric(r1_string):
+        r1_string = str(int(r1_string) + 1)
+    else:
+        r1_string = f"({r1_string}).asn1SccUint"
+    if str.isnumeric(r2_string):
+        r2_string = str(int(r2_string))
+    else:
+        r2_string = f"({r2_string}).asn1SccUint"
+
+    nim_string += f' ({r1_string} ..< {r2_string})'
+    stmts.extend(r1_stmts)
+    stmts.extend(r2_stmts)
+    local_decl.extend(r1_local)
+    local_decl.extend(r2_local)
+
+    return stmts, str(nim_string), local_decl
 
 
 @expression.register(ogAST.PrimSelector)
@@ -208,13 +242,96 @@ def _primary_state_reference(prim, **kwargs):
 @expression.register(ogAST.ExprMod)
 @expression.register(ogAST.ExprRem)
 def _basic_operators(expr, **kwargs):
-    not_implemented_error()
+    code, nim_string, local_decl = [], '', []
+
+    left_stmts, left_str, left_local = expression(expr.left, readonly=1)
+    right_stmts, right_str, right_local = expression(expr.right, readonly=1)
+
+    # Check if either side is a literal number
+    right_is_numeric = is_numeric(right_str)
+    left_is_numeric = is_numeric(left_str)
+
+    lbty = find_basic_type(expr.left.exprType)
+    rbty = find_basic_type(expr.right.exprType)
+
+    if lbty.kind.startswith('Integer') and \
+            isinstance(expr.right, (ogAST.PrimOctetStringLiteral,
+                                    ogAST.PrimBitStringLiteral)):
+        right_str = str(expr.right.numeric_value)
+
+    if rbty.kind.startswith('Integer') and \
+            isinstance(expr.left, (ogAST.PrimOctetStringLiteral,
+                                   ogAST.PrimBitStringLiteral)):
+        left_str = str(expr.left.numeric_value)
+
+    if left_is_numeric != right_is_numeric or rbty.kind == lbty.kind:
+        # No cast is needed if:
+        # - one of the two sides only is a literal
+        # - or if the basic types are identical
+        nim_string = '({left} {op} {right})'.format(left=left_str,
+                                                    op=expr.operand,
+                                                    right=right_str)
+
+    elif left_is_numeric and right_is_numeric:
+        # Both sides are literals : compute the result on the fly
+        nim_string = "{}".format(eval("{left} {op} {right}"
+                                      .format(left=left_str,
+                                              op=expr.operand,
+                                              right=right_str)))
+
+    elif rbty.kind != lbty.kind:
+        # Basic types are different (one is an Integer32, eg. loop iterator)
+        # => We must cast it to the type of the other side
+        if lbty.kind == 'Integer32Type':
+            left_str = f'({left_str}).{type_name(expr.right.exprType)}'
+        else:
+            right_str = f'({right_str}).{type_name(expr.left.exprType)}'
+        nim_string = f'({left_str} {expr.operand} {right_str})'
+
+    code.extend(left_stmts)
+    code.extend(right_stmts)
+    local_decl.extend(left_local)
+    local_decl.extend(right_local)
+    return code, str(nim_string), local_decl
 
 
 @expression.register(ogAST.ExprEq)
 @expression.register(ogAST.ExprNeq)
 def _equality(expr, **kwargs):
-    not_implemented_error()
+    code, left_str, local_decl = expression(expr.left, readonly=1)
+    right_stmts, right_str, right_local = expression(expr.right, readonly=1)
+
+    code.extend(right_stmts)
+    local_decl.extend(right_local)
+
+    asn1_type = getattr(expr.left.exprType, 'ReferencedTypeName', None)
+    actual_type = type_name(expr.left.exprType)
+
+    lbty = find_basic_type(expr.left.exprType)
+    rbty = find_basic_type(expr.right.exprType)
+
+    basic = lbty.kind in ('IntegerType',
+                          'Integer32Type',
+                          'IntegerU8Type',
+                          'BooleanType',
+                          'EnumeratedType',
+                          'ChoiceEnumeratedType')
+
+    nim_string = ''
+
+    if basic:
+        if isinstance(expr.right, (ogAST.PrimBitStringLiteral,
+                                   ogAST.PrimOctetStringLiteral)):
+            right_str = str(expr.right.numeric_value)
+        # Cast in case a side is using a 32bits ints (eg when using Length(..))
+        if lbty.kind == 'IntegerType' and rbty.kind != lbty.kind:
+            right_str = f'({right_str}).{type_name(lbty)}'
+        elif rbty.kind == 'IntegerType' and lbty.kind != rbty.kind:
+            left_str = f'({left_str}).{type_name(rbty)}'
+        nim_string = f'({left_str} {expr.operand} {right_str})'
+    else:
+        pass # TODO
+    return code, str(nim_string), local_decl
 
 
 @expression.register(ogAST.ExprAssign)
