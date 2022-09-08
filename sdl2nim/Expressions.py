@@ -9,22 +9,44 @@ from functools import singledispatch
 from opengeode import ogAST, Helper
 from opengeode.Helper import find_basic_type as __find_basic_type
 
-from .utils import not_implemented_error, var_exists, is_local, is_numeric, type_name
+from .utils import not_implemented_error, var_exists, is_local, is_numeric, type_name, child_spelling
+from .utils import string_payload as __string_payload
+from .utils import array_content as __array_content
 
 from typing import List, Tuple
 
 LOG = logging.getLogger(__name__)
 
-__all__ = ['expression']
+__all__ = ['expression',
+           'string_payload',
+           'array_content',
+           'find_basic_type',
+           'VARIABLES',
+           'LOCAL_VAR',
+           'TYPES',
+           'PROCEDURES',
+           'SEPARATOR',
+           'LPREFIX']
 
 VARIABLES = {}
 LOCAL_VAR = {}
 TYPES = None
 PROCEDURES = []
 SEPARATOR = "___"
+LPREFIX = u'context'
+
 
 def find_basic_type(a_type):
     return __find_basic_type(TYPES, a_type)
+
+
+def string_payload(prim, nim_string):
+    return __string_payload(prim, nim_string, TYPES)
+
+
+def array_content(prim, values, asnty):
+    return __array_content(prim, values, asnty, expression)
+
 
 @singledispatch
 def expression(expr):
@@ -59,7 +81,7 @@ def _prim_call(prim, **kwargs):
     func = prim.value[0].lower()
     params = prim.value[1]['procParams']
 
-    if func in ('abs', 'fix', 'float', 'chr', ):
+    if func in ('abs', 'fix', 'float', 'chr',):
         is_unsigned = (float(find_basic_type(params[0].exprType).Min) >= 0)
 
         param_stmts, param_str, local_var = expression(params[0], readonly=1)
@@ -149,7 +171,7 @@ def _prim_call(prim, **kwargs):
             nim_string += range_str
 
     elif func in ('observer_status', 'num', 'val', 'to_selector',
-                  'to_enum', 'exist', 'choice_to_int', 'present', ):
+                  'to_enum', 'exist', 'choice_to_int', 'present',):
         # TODO
         pass
 
@@ -182,6 +204,7 @@ def _prim_index(prim, **kwargs):
     local_decl.extend(idx_var)
 
     return stmts, str(nim_string), local_decl
+
 
 @expression.register(ogAST.PrimSubstring)
 def _prim_substring(prim, **kwargs):
@@ -223,13 +246,41 @@ def _prim_substring(prim, **kwargs):
 
 @expression.register(ogAST.PrimSelector)
 def _prim_selector(prim, **kwargs):
-    not_implemented_error()
+    ''' Selector (field access with '!' or '.' separation) '''
+    stmts, ada_string, local_decl = [], '', []
+    ro = kwargs.get("readonly", 0)
+
+    receiver = prim.value[0]  # can be a PrimSelector
+    field_name = prim.value[1]
+
+    receiver_stms, receiver_string, receiver_decl = expression(receiver,
+                                                               readonly=ro)
+
+    nim_string = receiver_string
+    stmts.extend(receiver_stms)
+    local_decl.extend(receiver_decl)
+
+    receiver_bty = find_basic_type(receiver.exprType)
+
+    if receiver_bty.kind == 'ChoiceType':
+        nim_string = f'{nim_string}.{field_name}'
+    else:
+        # SEQUENCE, check for field optionality first
+        child = child_spelling(field_name, receiver_bty)
+        if receiver_bty.Children[child].Optional == 'True' \
+                and not kwargs.get("readonly", 0):
+            # Must set Exist only when assigning value, not each time it is
+            # accessed: this is what "readonly" ensures.
+            stmts.append(f'{nim_string}.exist.{field_name} = 1;')
+        nim_string += '.' + field_name
+
+    return stmts, str(nim_string), local_decl
 
 
 @expression.register(ogAST.PrimStateReference)
 def _primary_state_reference(prim, **kwargs):
-    not_implemented_error()
-
+    ''' Reference to the current state '''
+    return [], f'{LPREFIX}.state', []
 
 @expression.register(ogAST.ExprPlus)
 @expression.register(ogAST.ExprMul)
@@ -330,13 +381,65 @@ def _equality(expr, **kwargs):
             left_str = f'({left_str}).{type_name(rbty)}'
         nim_string = f'({left_str} {expr.operand} {right_str})'
     else:
-        pass # TODO
+        pass  # TODO
     return code, str(nim_string), local_decl
 
 
 @expression.register(ogAST.ExprAssign)
 def _assign_expression(expr, **kwargs):
-    not_implemented_error()
+    code, local_decl = [], []
+    strings = []
+    left_stmts, left_str, left_local = expression(expr.left)
+    right_stmts, right_str, right_local = expression(expr.right, readonly=1)
+
+    basic_left = find_basic_type(expr.left.exprType)
+
+    if (basic_left.kind == 'IA5StringType') and isinstance(expr.right, ogAST.PrimStringLiteral):
+        # TODO
+        pass
+
+    elif basic_left.kind in ('SequenceOfType', 'OctetStringType', 'BitStringType'):
+        # TODO
+        pass
+
+    elif basic_left.kind.startswith('Integer') and isinstance(expr.right,
+                                                              (ogAST.PrimOctetStringLiteral,
+                                                               ogAST.PrimBitStringLiteral)):
+        # If right is an octet string or bit string literal, use the numerical
+        # value directly.
+        right_str = str(expr.right.numeric_value)
+        strings.append(f"{left_str} = {right_str};")
+
+    elif basic_left.kind.startswith('Integer'):
+        # Integers should be compatible by default (opengeode parser checks this).
+        # Casting rhs to lhs should thus always be safe
+        basic_right = find_basic_type(expr.right.exprType)
+        cast_left, cast_right = type_name(basic_left), type_name(basic_right)
+        if cast_left != cast_right:
+            res = f'({right_str}).{cast_left}'
+        else:
+            if hasattr(expr.right, "expected_type") \
+                    and expr.right.expected_type is not None:
+
+                cast_expected = type_name(expr.right.expected_type)
+                if cast_expected != cast_left:
+                    res = f'({right_str}).{cast_left}'
+                else:
+                    res = right_str
+            else:
+                res = right_str
+
+        strings.append(f"{left_str} = {res}")
+
+    else:
+        strings.append(f"{left_str} = {right_str}")
+
+    code.extend(left_stmts)
+    code.extend(right_stmts)
+    code.extend(strings)
+    local_decl.extend(left_local)
+    local_decl.extend(right_local)
+    return code, '', local_decl
 
 
 @expression.register(ogAST.ExprOr)
@@ -344,12 +447,90 @@ def _assign_expression(expr, **kwargs):
 @expression.register(ogAST.ExprXor)
 @expression.register(ogAST.ExprImplies)
 def _bitwise_operators(expr, **kwargs):
-    not_implemented_error()
+    code, local_decl = [], []
+    nim_string = ""
+
+    left_stmts, left_str, left_local = expression(expr.left, readonly=1)
+    right_stmts, right_str, right_local = expression(expr.right, readonly=1)
+
+    basic_type = find_basic_type(expr.exprType)
+
+    if basic_type.kind != 'BooleanType':
+        left_bty = find_basic_type(expr.left.exprType)
+        right_bty = find_basic_type(expr.left.exprType)
+
+        if left_bty.kind.startswith('Integer') and right_bty.kind.startswith('Integer'):
+            # left and right are numbers
+            nim_string = f'({left_str} {expr.operand} {right_str})'
+
+        elif expr.right.is_raw:
+            if left_bty.kind.startswith('Integer'):
+                # right is raw (e.g. hex string literal) and left is a number
+                if isinstance(expr.right, (ogAST.PrimBitStringLiteral, ogAST.PrimOctetStringLiteral)):
+                    right_payload = str(expr.right.numeric_value)
+                else:
+                    right_payload = right_str
+
+                left_payload = left_str  # + string_payload(expr.left, left_str)
+                nim_string = f'({left_payload} {expr.operand} {right_payload})'
+
+            else:
+                # right is a raw value (hex/bit string)
+                # right cannot be an integer here (it would need to be converted
+                # to an hex string for bitwise operations to work against
+                # a sequence of / bit string
+                # Declare a temporary variable to store the raw value
+                tmp_string = f'tmp{expr.right.tmpVar}'
+
+                if isinstance(expr.right,
+                              (ogAST.PrimSequenceOf,
+                               ogAST.PrimStringLiteral)):
+                    right_str = array_content(expr.right, right_str, basic_type)
+
+                local_decl.append(f'{tmp_string} : constant {type_name(expr.right.exprType)} := {right_str};')
+                # code.append(f'{tmp_string} := {right_str};')
+
+                right_str = tmp_string
+                right_payload = right_str + '.Data'
+
+        else:
+            right_payload = right_str + string_payload(expr.right, right_str)
+
+    elif isinstance(expr, ogAST.ExprImplies):
+        nim_string = f'((not {left_str}) or {right_str})'
+    else:
+        nim_string = f'({left_str} {expr.operand}{expr.shortcircuit} {right_str})'
+
+    code.extend(left_stmts)
+    code.extend(right_stmts)
+    local_decl.extend(left_local)
+    local_decl.extend(right_local)
+    return code, str(nim_string), local_decl
 
 
 @expression.register(ogAST.ExprNot)
 def _not_expression(expr, **kwargs):
-    not_implemented_error()
+    ''' Generate the code for a not expression '''
+    code, local_decl = [], []
+    if isinstance(expr.expr, ogAST.PrimSequenceOf):
+        # Raw sequence of boolean (e.g. not "{true, false}") -> flip values
+        for each in expr.expr.value:
+            each.value[0] = 'true' if each.value[0] == 'false' else 'false'
+
+    expr_stmts, expr_str, expr_local = expression(expr.expr, readonly=1)
+
+    bty_inner = find_basic_type(expr.expr.exprType)
+    bty_outer = find_basic_type(expr.exprType)
+
+    if (bty_outer.kind != 'BooleanType') and ("Integer" not in bty_outer.kind):
+        nim_string = array_content(expr.expr, expr_str, bty_outer)
+        # TODO
+    else:
+        nim_string = f'(not {expr_str})'
+
+    code.extend(expr_stmts)
+    local_decl.extend(expr_local)
+    return code, str(nim_string), local_decl
 
 
 @expression.register(ogAST.ExprNeg)
@@ -374,17 +555,75 @@ def _append(expr, **kwargs):
 
 @expression.register(ogAST.ExprIn)
 def _expr_in(expr, **kwargs):
-    not_implemented_error()
+    ''' IN expressions: check if item is in a SEQUENCE OF '''
+    stmts, local_decl = [], []
+    nim_string = ""
+
+    left_stmts, left_str, left_local = expression(expr.left, readonly=1)
+    right_stmts, right_str, right_local = expression(expr.right, readonly=1)
+
+    local_decl.extend(left_local)
+    local_decl.extend(right_local)
+
+    stmts.extend(left_stmts)
+    stmts.extend(right_stmts)
+
+    # it is possible to test against a raw sequence of: x in { 1,2,3 }
+    # in that case we create an array on the type of x, and we test
+    # presence using the form "for some Value of tmpXXX => x = Value"
+    if isinstance(expr.left, ogAST.PrimSequenceOf):
+        sort = type_name(expr.right.exprType)
+        size = expr.left.exprType.Max
+
+        local_decl.append(f'tmp{expr.tmpVar} : constant array[ {size} , {sort} ] = ({left_str})')
+        nim_string = f'(for loopvar{expr.tmpVar} of tmp{expr.tmpVar} => var = {right_str})'
+    else:
+        local_decl.append(f'tmp{expr.tmpVar} : bool = false;')
+        nim_string = f'tmp{expr.tmpVar}'
+
+        # stmts.append(f"in_loop_{nim_string}:")
+        left_type = find_basic_type(expr.left.exprType)
+
+        len_str = f"len({left_str})"
+
+        if left_type.Min != left_type.Max:
+            stmts.append(f"for idx in 0 ..< {len_str}:")
+        else:
+            stmts.append(f"for idx in {left_str}.low .. {left_str}.high:")
+
+        stmts.append(f"if {left_str}[idx] == {right_str}:")
+
+        stmts.append(f"{nim_string} = true")
+
+        stmts.append(f"if {nim_string} == true: break")
+
+    return stmts, str(nim_string), local_decl
 
 
 @expression.register(ogAST.PrimEnumeratedValue)
 def _enumerated_value(primary, **kwargs):
-    not_implemented_error()
+    ''' Generate code for an enumerated value '''
+    enumerant = primary.value[0].replace('_', '-').lower()
+    basic = find_basic_type(primary.exprType)
+    for each in basic.EnumValues:
+        if each.lower() == enumerant:
+            break
+    # no "asn1Scc" prefix if the enumerated is a choice selector
+    use_prefix = getattr(basic.EnumValues[each], "IsStandardEnum", True)
+    prefix = type_name(basic, use_prefix=use_prefix)
+    nim_string = (prefix + basic.EnumValues[each].EnumID) # TODO
+    return [], str(nim_string), []
 
 
 @expression.register(ogAST.PrimChoiceDeterminant)
 def _choice_determinant(primary, **kwargs):
-    not_implemented_error()
+    ''' Generate code for a choice determinant (enumerated) '''
+    enumerant = primary.value[0].replace('_', '-').lower()
+    for each in primary.exprType.EnumValues:
+        if each.lower() == enumerant:
+            break
+    nim_string = primary.exprType.EnumValues[each].EnumID # TODO
+    return [], str(nim_string), []
 
 
 @expression.register(ogAST.PrimInteger)
