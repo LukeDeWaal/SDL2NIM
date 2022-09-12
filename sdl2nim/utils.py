@@ -11,7 +11,11 @@ __all__ = ['not_implemented_error',
            'is_local',
            'string_payload',
            'array_content',
-           'child_spelling']
+           'child_spelling',
+           'ia5string_raw',
+           'external_ri_list',
+           'procedure_header',
+           'format_nim_code']
 
 
 def not_implemented_error():
@@ -51,10 +55,13 @@ def is_local(var, local_var):
     return var in (loc for loc in local_var.keys())
 
 
-def type_name(a_type, prefix=''):
+def type_name(a_type, use_prefix=True, prefix=''):
     ''' Check the type kind and return a Nim usable type name '''
     if a_type.kind == 'ReferenceType':
-        return prefix + a_type.ReferencedTypeName.replace('-', '_')
+        if use_prefix:
+            return prefix + a_type.ReferencedTypeName
+        else:
+            return a_type.ReferencedTypeName
     elif a_type.kind == 'BooleanType':
         return 'bool'
     elif a_type.kind.startswith('Integer32'):
@@ -75,7 +82,10 @@ def type_name(a_type, prefix=''):
     elif a_type.kind == 'StateEnumeratedType':
         return prefix
     elif a_type.kind == 'EnumeratedType':
-        return prefix
+        if use_prefix:
+            return prefix
+        else:
+            return ''
     else:
         raise NotImplementedError(f'Type name for {a_type.kind}')
 
@@ -132,3 +142,97 @@ def child_spelling(name, bty):
         return name
     raise TypeError(f'Child not found: {name}')
 
+
+def ia5string_raw(prim: ogAST.PrimStringLiteral):
+    ''' IA5 Strings are of type String in Ada but this is not directly
+        compatible with variable-length strings as defined in ASN.1
+        Since the Ada type maps to a null-terminated C type, we have to make
+        a corresponding assignment, filling then non-used part of the container
+        with NULL character. To know the size, we can use adaasn1rtl.getStringSize
+        '''
+    # TODO
+    return "('" + "', '".join(prim.value[1:-1]) + "', others => Standard.ASCII.NUL)"
+
+
+def external_ri_list(process, SEPARATOR, ASN1SCC):
+    ''' Helper function: create a list of RI with proper signature
+    Used for the formal parameters of generic packages when using process type
+    '''
+    result = []
+    #print process.fpar
+    for signal in process.output_signals:
+        param_name = signal.get('param_name') or f'{signal["name"]}_param'
+        param_spec = ''
+        if 'type' in signal:
+            typename = type_name(signal['type'])
+            param_spec = f'({param_name}: {typename}): {typename}'
+        result.append(f"proc RI{SEPARATOR}{signal['name']}{param_spec}")
+    for proc in (proc for proc in process.procedures if proc.external):
+        ri_header = f'proc RI{SEPARATOR}{proc.inputString}'
+        in_params = []
+        out_params = []
+        in_params_spec = ''
+        out_params_spec = ''
+        for param in proc.fpar:
+            typename = type_name(param['type'])
+            if param['direction'] == 'in':
+                in_params.append(f'{param["name"]} : {typename}')
+            else:
+                out_params.append(f'{param["name"]} : {typename}')
+
+        in_params_spec = "({})".format(", ".join(in_params))
+        ri_header += in_params_spec
+        if out_params:
+            out_params_spec = "({})".format(", ".join(out_params))
+            ri_header += out_params_spec
+        result.append(ri_header)
+
+    for timer in process.timers:
+        result.append(
+                f"proc Set_{timer} (Val : {ASN1SCC}T_Uint32): {ASN1SCC}T_Uint32")
+        result.append(f"proc Reset_{timer}")
+    return result
+
+
+def procedure_header(proc, SEPARATOR):
+    ''' Build the prototype of a procedure '''
+    ret_type = type_name(proc.return_type) if proc.return_type else None
+    kind = 'proc' # if not proc.return_type else 'func'
+    sep = f'p{SEPARATOR}' if not proc.exported else ''
+    proc_name = proc.inputString
+    pi_header = f'{kind} {sep}{proc_name}'
+    if proc.fpar:
+        pi_header += '('
+        params = []
+        for fpar in proc.fpar:
+            typename = type_name(fpar['type'])
+            if fpar.get('direction') == 'in':
+                params.append('{name}: {ptype}'.format(
+                        name=fpar.get('name'),
+                        ptype=typename))
+        pi_header += ','.join(params)
+        pi_header += '):'
+    if ret_type:
+        pi_header += f' {ret_type}'
+    return pi_header
+
+
+def format_nim_code(stmts):
+    ''' Indent properly the Nim code ''' # TODO
+    indent = 0
+    indent_pattern = '   '
+    for line in stmts[:-1]:
+        elems = line.strip().split()
+        if elems and elems[0].startswith(('when', 'end', 'elsif', 'else')):
+            indent = max(indent - 1, 0)
+        if elems and elems[-1] == 'case;':  # Corresponds to end case;
+            indent = max(indent - 1, 0)
+        if line:
+            yield indent_pattern * indent + line
+        if elems and elems[-1] in ('is', 'then', 'loop', 'declare'):
+            indent += 1
+        if elems and elems[0] in ('begin', 'case', 'else', 'when'):
+            indent += 1
+        if not elems:  # newline -> decrease indent
+            indent -= 1
+    yield stmts[-1]

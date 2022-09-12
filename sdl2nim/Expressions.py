@@ -9,9 +9,12 @@ from functools import singledispatch
 from opengeode import ogAST, Helper
 from opengeode.Helper import find_basic_type as __find_basic_type
 
-from .utils import not_implemented_error, var_exists, is_local, is_numeric, type_name, child_spelling
+from .utils import not_implemented_error, var_exists, is_local, is_numeric, child_spelling, ia5string_raw
 from .utils import string_payload as __string_payload
 from .utils import array_content as __array_content
+from .utils import type_name as __type_name
+from .utils import external_ri_list as __external_ri_list
+from .utils import procedure_header as __procedure_header
 
 from typing import List, Tuple
 
@@ -26,14 +29,29 @@ __all__ = ['expression',
            'TYPES',
            'PROCEDURES',
            'SEPARATOR',
-           'LPREFIX']
+           'LPREFIX',
+           'ASN1SCC',
+           'OUT_SIGNALS',
+           'PROCESS_NAME',
+           'MONITORS',
+           'find_basic_type',
+           'string_payload',
+           'array_content',
+           'type_name',
+           'append_size',
+           'external_ri_list',
+           'procedure_header']
 
+PROCESS_NAME = ""
 VARIABLES = {}
+MONITORS = {}
 LOCAL_VAR = {}
 TYPES = None
 PROCEDURES = []
+OUT_SIGNALS = []
 SEPARATOR = "___"
 LPREFIX = u'context'
+ASN1SCC = 'asn1Scc'
 
 
 def find_basic_type(a_type):
@@ -46,6 +64,18 @@ def string_payload(prim, nim_string):
 
 def array_content(prim, values, asnty):
     return __array_content(prim, values, asnty, expression)
+
+
+def type_name(a_type, use_prefix=True):
+    return __type_name(a_type, use_prefix=use_prefix, prefix=ASN1SCC)
+
+
+def external_ri_list(process):
+    return __external_ri_list(process, SEPARATOR, ASN1SCC)
+
+
+def procedure_header(proc):
+    return __procedure_header(proc, SEPARATOR)
 
 
 @singledispatch
@@ -610,7 +640,7 @@ def _enumerated_value(primary, **kwargs):
             break
     # no "asn1Scc" prefix if the enumerated is a choice selector
     use_prefix = getattr(basic.EnumValues[each], "IsStandardEnum", True)
-    prefix = type_name(basic, use_prefix=use_prefix)
+    prefix = __type_name(basic, use_prefix=use_prefix)
     nim_string = (prefix + basic.EnumValues[each].EnumID) # TODO
     return [], str(nim_string), []
 
@@ -690,19 +720,268 @@ def _mantissa_base_exp(primary, **kwargs):
 
 @expression.register(ogAST.PrimConditional)
 def _conditional(cond, **kwargs):
-    not_implemented_error()
+    ''' Return string and statements for conditional expressions '''
+    stmts = []
+
+    tmp_type = type_name(cond.exprType)
+
+    if tmp_type == 'String':
+        then_str = cond.value['then'].value.replace("'", '"')
+        else_str = cond.value['else'].value.replace("'", '"')
+        lens = [len(then_str), len(else_str)]
+        tmp_type = 'cstring' #f'String (1 .. {max(lens) - 2})'
+        # Ada require fixed-length strings, adjust with spaces
+        if lens[0] < lens[1]:
+            then_str = then_str[0:-1] + ' ' * (lens[1] - lens[0]) + '"'
+        elif lens[1] < lens[0]:
+            else_str = else_str[0:-1] + ' ' * (lens[0] - lens[1]) + '"'
+
+    local_decl = [f'tmp{cond.value["tmpVar"]} : {tmp_type};']
+    if_stmts, if_str, if_local = expression(cond.value['if'], readonly=1)
+    stmts.extend(if_stmts)
+    local_decl.extend(if_local)
+    if not tmp_type.startswith('String'):
+        then_stmts, then_str, then_local = expression(cond.value['then'],
+                                                      readonly=1)
+        else_stmts, else_str, else_local = expression(cond.value['else'],
+                                                      readonly=1)
+        #       print "\nCONDITIONAL :", cond.inputString, tmp_type,
+        #       print "THEN TYPE:", type_name(find_basic_type(cond.value['then'].exprType)),
+        #       print "ELSE TYPE:", type_name(find_basic_type(cond.value['else'].exprType))
+        stmts.extend(then_stmts)
+        stmts.extend(else_stmts)
+        local_decl.extend(then_local)
+        local_decl.extend(else_local)
+    stmts.append('if {if_str}:'.format(if_str=if_str))
+
+    basic_then = find_basic_type(cond.value['then'].exprType)
+    basic_else = find_basic_type(cond.value['else'].exprType)
+
+    then_len = None
+    if not tmp_type.startswith('String') and isinstance(cond.value['then'],
+                                                        (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
+        then_str = array_content(cond.value['then'], then_str, basic_then)
+    if isinstance(cond.value['then'], ogAST.ExprAppend):
+        then_len = append_size(cond.value['then'])
+        stmts.append("tmp{idx} = {then_str}"
+                     .format(idx=cond.value['tmpVar'],
+                             then_str=then_str))
+    elif isinstance(cond.value['then'], ogAST.PrimSubstring):
+        stmts.append("tmp{idx} = {then_str}"
+                     .format(idx=cond.value['tmpVar'], then_str=then_str))
+        if basic_then.Min != basic_then.Max:
+            then_len = f"len({then_str})"
+    else:
+        stmts.append('tmp{idx} = {then_str};'
+                     .format(idx=cond.value['tmpVar'], then_str=then_str))
+    # if then_len:
+    #     stmts.append("tmp{idx} = {then_len};"
+    #                  .format(idx=cond.value['tmpVar'], then_len=then_len))
+
+    stmts.append('else:')
+    else_len = None
+    if not tmp_type.startswith('String') and isinstance(cond.value['else'],
+                                                        (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
+        else_str = array_content(cond.value['else'], else_str, basic_else)
+
+    if isinstance(cond.value['else'], ogAST.ExprAppend):
+        else_len = append_size(cond.value['else'])
+        stmts.append("tmp{idx} = {else_str};"
+                     .format(idx=cond.value['tmpVar'],
+                             else_str=else_str))
+    elif isinstance(cond.value['else'], ogAST.PrimSubstring):
+        stmts.append("tmp{idx} = {else_str};"
+                     .format(idx=cond.value['tmpVar'], else_str=else_str))
+        if basic_else.Min != basic_else.Max:
+            else_len = "len({})".format(else_str)
+    else:
+        stmts.append('tmp{idx} = {else_str};'.format(
+            idx=cond.value['tmpVar'],
+            else_str=else_str))
+    # if else_len:
+    #     stmts.append("tmp{idx}.Length := {else_len};"
+    #                  .format(idx=cond.value['tmpVar'], else_len=else_len))
+    # stmts.append('end if;')
+    nim_string = 'tmp{idx}'.format(idx=cond.value['tmpVar'])
+    return stmts, str(nim_string), local_decl
 
 
 @expression.register(ogAST.PrimSequence)
 def _sequence(seq, **kwargs):
-    not_implemented_error()
+    stmts, local_decl = [], []
+    try:
+        nim_string = f"{type_name(seq.exprType)}'("
+    except NotImplementedError as err:
+        err = f"!!YOU FOUND A BUG!! - The type of this record is undefined: {seq.inputString}"
+        raise TypeError(str(err).replace('\n', ''))
+
+    sep = ''
+    type_children = find_basic_type(seq.exprType).Children
+    optional_fields = {field.lower(): {'present': False,
+                                       'ref': (field, val)}
+                       for field, val in type_children.items()
+                       if val.Optional == 'True'}
+    present_fields = []
+    absent_fields = []
+    for elem, value in seq.value.items():
+        # Set the type of the field - easy thanks to ASN.1 flattened AST
+        for each in type_children:
+            if each == elem:
+                elem_spec = type_children[each]
+                break
+
+        elem_specty = elem_spec.type
+
+        # Find the basic type of the elem: if it is a number and the value
+        # is an octet/bit string literal, then use the raw number
+        elem_bty = find_basic_type(elem_specty)
+
+        value_stmts, value_str, local_var = expression(value, readonly=1)
+
+        if isinstance(value, (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
+            if elem_bty.kind.startswith('Integer'):
+                value_str = str(value.numeric_value)
+            elif elem_bty.kind == 'IA5StringType':
+                value_str = ia5string_raw(value)
+            else:
+                value_str = array_content(value, value_str, elem_bty)
+
+        nim_string += f"{sep} {elem} => {value_str}"
+        if elem.lower() in optional_fields:
+            # Set optional field presence
+            optional_fields[elem.lower()]['present'] = True
+        sep = ', '
+        stmts.extend(value_stmts)
+        local_decl.extend(local_var)
+    # Process optional fields
+    if optional_fields:
+        absent_fields = ((fd_name, fd_data['ref'])
+                         for fd_name, fd_data in optional_fields.items()
+                         if not fd_data['present'])
+        for fd_name, fd_data in absent_fields:
+            fd_type = fd_data[1].type
+            if fd_type.kind == 'ReferenceType':
+                value = f'{type_name(fd_type)}_Init'
+            elif fd_type.kind == 'BooleanType':
+                value = 'False'
+            elif fd_type in ('IntegerType', 'RealType'):
+                value = fd_type.Min
+            nim_string += f'{sep}{fd_name}: {value}'
+            sep = ', '
+        nim_string += ', Exist: ('
+        sep = ''
+        for fd_name, fd_data in optional_fields.items():
+            nim_string += f'{sep}{fd_name}: {"true" if fd_data["present"] else "false"}'
+            sep = ', '
+        nim_string += ')'
+
+    nim_string += ')'
+    return stmts, str(nim_string), local_decl
 
 
 @expression.register(ogAST.PrimSequenceOf)
 def _sequence_of(seqof, **kwargs):
-    not_implemented_error()
+    stmts, local_decl = [], []
+    seqof_ty = seqof.exprType
+    try:
+        asn_type = find_basic_type(TYPES[seqof_ty.ReferencedTypeName].type)
+    except AttributeError:
+        asn_type = None
+        min_size, max_size = seqof_ty.Min, seqof_ty.Max
+        if hasattr(seqof, 'expected_type'):
+            sortref = TYPES[seqof.expected_type.ReferencedTypeName]
+            while (hasattr(sortref, "type")):
+                sortref = sortref.type
+            asn_type = find_basic_type(sortref)
+    tab = []
+    for i in range(len(seqof.value)):
+        item_stmts, item_str, local_var = expression(seqof.value[i],
+                                                     readonly=1)
+        if isinstance(seqof.value[i],
+                      (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
+            item_str = array_content(seqof.value[i], item_str, asn_type or
+                                     find_basic_type(seqof.value[i].exprType))
+        elif isinstance(seqof.value[i], ogAST.PrimSubstring):
+            # Put substring elements in a local variable, otherwise they may
+            # not work well with some operators (e.g. Append)
+            tmpVarName = f'tmp{seqof.value[i].tmpVar}'
+            tmpVarSort = seqof.value[i].exprType
+            local_decl.append(f'{tmpVarName} : {type_name(tmpVarSort)};')
+            # To get a proper assignment we need to create an ExprAssign
+            expr = ogAST.ExprAssign()
+            expr.left = ogAST.PrimVariable()
+            expr.left.value = [tmpVarName]
+            expr.left.exprType = tmpVarSort
+            expr.right = seqof.value[i]
+            expr.right.exprType = tmpVarSort
+            expr.exprType = tmpVarSort
+            assign_stmt, _, assign_loc = expression(expr, readonly=1)
+            item_stmts.extend(assign_stmt)
+            local_decl.extend(assign_loc)
+            item_str = tmpVarName
+
+        stmts.extend(item_stmts)
+        local_decl.extend(local_var)
+        tab.append(f'{item_str}')
+    nim_string = ', '.join(tab)
+    return stmts, str(nim_string), local_decl
 
 
 @expression.register(ogAST.PrimChoiceItem)
 def _choiceitem(choice, **kwargs):
-    not_implemented_error()
+    stmts, choice_str, local_decl = expression(choice.value['value'],
+                                               readonly=1)
+
+    bty = find_basic_type(choice.value['value'].exprType)
+
+    if isinstance(choice.value['value'], (ogAST.PrimSequenceOf,
+                                          ogAST.PrimStringLiteral)):
+        if bty.kind.startswith('Integer'):
+            choice_str = choice.value['value'].numeric_value
+        else:
+            choice_str = array_content(choice.value['value'], choice_str, bty)
+
+    # look for the right spelling of the choice discriminant
+    # (normally field_PRESENT, but can be prefixed by the type name if there
+    # is a namespace conflict)
+    basic = find_basic_type(choice.exprType)
+    prefix = 'CHOICE_NOT_FOUND'
+    search = choice.value['choice'].lower().replace('-', '_')
+    for each in basic.Children:
+        curr_choice = each.lower().replace('-', '_')
+        if curr_choice == search:
+            prefix = basic.Children[each].EnumID
+            break
+    nim_string = f'(Kind => {prefix}, {choice.value["choice"]} => {choice_str})' # TODO
+    return stmts, str(nim_string), local_decl
+
+
+def append_size(append):
+    ''' Return a string corresponding to the length of an APPEND construct
+        This function is recursive, to handle cases such as a//b//c
+        that is handled as (a//b) // c -> get the length of a//b then add c
+    '''
+    # TODO
+    result = ''
+    basic = find_basic_type(append.exprType)
+    if basic.Min == basic.Max:
+        # Simple case when appending two fixed-length sizes
+        return basic.Min
+    for each in (append.left, append.right):
+        if result:
+            result += ' + '
+        if isinstance(each, ogAST.ExprAppend):
+            # Inner append -> go recursively
+            result += append_size(each)
+        else:
+            bty = find_basic_type(each.exprType)
+            if bty.Min == bty.Max:
+                result += bty.Min
+            else:
+                # Must be a variable of type SEQOF
+                _, inner, _ = expression(each, readonly=1)
+                if isinstance (each, ogAST.PrimSubstring):
+                    result += "{}'Length".format(inner)
+                else:
+                    result += "{}.Length".format(inner)
+    return result
