@@ -412,8 +412,42 @@ def _assign_expression(expr, **kwargs):
         pass
 
     elif basic_left.kind in ('SequenceOfType', 'OctetStringType', 'BitStringType'):
-        # TODO
-        pass
+        rlen = f"{right_str}'Length"
+
+        if isinstance(expr.right, ogAST.PrimSubstring):
+            if not isinstance(expr.left, ogAST.PrimSubstring):
+                # only if left is not a substring, otherwise syntax
+                # would be wrong due to result of _prim_substring
+                strings.append(f"{left_str}.Data(1..{right_str}'Length) := {right_str};")
+            else:
+                # left is substring: no length, direct assignment
+                rlen = ""
+                strings.append(f"{left_str} = {right_str};")
+
+        elif isinstance(expr.right, ogAST.ExprAppend):
+            basic_right = find_basic_type(expr.right.exprType)
+            rlen = append_size(expr.right)
+            strings.append("{lvar}[0 ..< {lstr}] = {rvar};"
+                           .format(lvar=left_str,
+                                   rvar=right_str,
+                                   lstr=rlen))
+
+        elif isinstance(expr.right, (ogAST.PrimSequenceOf,
+                                     ogAST.PrimStringLiteral)):
+            if not isinstance(expr.left, ogAST.PrimSubstring):
+                strings.append(
+                    f"{left_str} = {array_content(expr.right, right_str, basic_left)};")
+            else:
+                # left is substring: no length, direct assignment
+                strings.append(f"{left_str} = ({right_str});")
+
+            rlen = None
+        else:
+            # Right part is a variable
+            strings.append(f"{left_str} := {right_str};")
+            rlen = None
+        if rlen and basic_left.Min != basic_left.Max:
+            strings.append(f"{left_str}.Length := {rlen};")
 
     elif basic_left.kind.startswith('Integer') and isinstance(expr.right,
                                                               (ogAST.PrimOctetStringLiteral,
