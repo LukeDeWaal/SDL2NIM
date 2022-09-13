@@ -1,4 +1,4 @@
-import imp
+
 import inspect
 import re
 
@@ -8,6 +8,8 @@ import opengeode
 from functools import singledispatch
 from opengeode import ogAST, Helper
 from opengeode.Helper import find_basic_type as __find_basic_type
+
+from . import settings
 
 from .utils import not_implemented_error, var_exists, is_local, is_numeric, child_spelling, ia5string_raw
 from .utils import string_payload as __string_payload
@@ -24,16 +26,6 @@ __all__ = ['expression',
            'string_payload',
            'array_content',
            'find_basic_type',
-           'VARIABLES',
-           'LOCAL_VAR',
-           'TYPES',
-           'PROCEDURES',
-           'SEPARATOR',
-           'LPREFIX',
-           'ASN1SCC',
-           'OUT_SIGNALS',
-           'PROCESS_NAME',
-           'MONITORS',
            'find_basic_type',
            'string_payload',
            'array_content',
@@ -42,24 +34,15 @@ __all__ = ['expression',
            'external_ri_list',
            'procedure_header']
 
-PROCESS_NAME = ""
-VARIABLES = {}
-MONITORS = {}
-LOCAL_VAR = {}
-TYPES = None
-PROCEDURES = []
-OUT_SIGNALS = []
-SEPARATOR = "___"
-LPREFIX = u'context'
-ASN1SCC = 'asn1Scc'
+
 
 
 def find_basic_type(a_type):
-    return __find_basic_type(TYPES, a_type)
+    return __find_basic_type(settings.TYPES, a_type)
 
 
 def string_payload(prim, nim_string):
-    return __string_payload(prim, nim_string, TYPES)
+    return __string_payload(prim, nim_string, settings.TYPES)
 
 
 def array_content(prim, values, asnty):
@@ -67,15 +50,15 @@ def array_content(prim, values, asnty):
 
 
 def type_name(a_type, use_prefix=True):
-    return __type_name(a_type, use_prefix=use_prefix, prefix=ASN1SCC)
+    return __type_name(a_type, use_prefix=use_prefix, prefix=settings.ASN1SCC)
 
 
 def external_ri_list(process):
-    return __external_ri_list(process, SEPARATOR, ASN1SCC)
+    return __external_ri_list(process, settings.SEPARATOR, settings.ASN1SCC)
 
 
 def procedure_header(proc):
-    return __procedure_header(proc, SEPARATOR)
+    return __procedure_header(proc, settings.SEPARATOR)
 
 
 @singledispatch
@@ -91,8 +74,8 @@ def expression(expr):
 
 @expression.register(ogAST.PrimVariable)
 def _primary_variable(prim, **kwargs):
-    exists = var_exists(prim.value[0], VARIABLES)
-    if (not exists) or is_local(prim.value[0], LOCAL_VAR):  # Local Variable Access
+    exists = var_exists(prim.value[0], settings.VARIABLES)
+    if (not exists) or is_local(prim.value[0], settings.LOCAL_VAR):  # Local Variable Access
         sep = ''
     else:  # Global Variable Access
         sep = ''
@@ -310,7 +293,7 @@ def _prim_selector(prim, **kwargs):
 @expression.register(ogAST.PrimStateReference)
 def _primary_state_reference(prim, **kwargs):
     ''' Reference to the current state '''
-    return [], f'{LPREFIX}.state', []
+    return [], f'{settings.LPREFIX}.state', []
 
 @expression.register(ogAST.ExprPlus)
 @expression.register(ogAST.ExprMul)
@@ -884,12 +867,12 @@ def _sequence_of(seqof, **kwargs):
     stmts, local_decl = [], []
     seqof_ty = seqof.exprType
     try:
-        asn_type = find_basic_type(TYPES[seqof_ty.ReferencedTypeName].type)
+        asn_type = find_basic_type(settings.TYPES[seqof_ty.ReferencedTypeName].type)
     except AttributeError:
         asn_type = None
         min_size, max_size = seqof_ty.Min, seqof_ty.Max
         if hasattr(seqof, 'expected_type'):
-            sortref = TYPES[seqof.expected_type.ReferencedTypeName]
+            sortref = settings.TYPES[seqof.expected_type.ReferencedTypeName]
             while (hasattr(sortref, "type")):
                 sortref = sortref.type
             asn_type = find_basic_type(sortref)

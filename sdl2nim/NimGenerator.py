@@ -6,22 +6,14 @@ import re
 
 import logging
 import opengeode
+from . import settings
 
 from functools import singledispatch
 from opengeode import ogAST, Helper
 
 from .utils import not_implemented_error, traceability, ia5string_raw, is_numeric, format_nim_code
-from .Expressions import (VARIABLES,
-                          LOCAL_VAR,
-                          TYPES,
-                          PROCEDURES,
-                          SEPARATOR,
-                          LPREFIX,
-                          ASN1SCC,
-                          OUT_SIGNALS,
-                          PROCESS_NAME,
-                          MONITORS, procedure_header)
-from .Expressions import expression, array_content, find_basic_type, string_payload, type_name, append_size, external_ri_list
+from .Expressions import (expression, array_content, find_basic_type, string_payload, type_name, append_size,
+                          external_ri_list, procedure_header)
 
 from typing import List, Tuple
 
@@ -135,18 +127,15 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         generic = False
         process_instance = process
 
-    global PROCESS_NAME
-    PROCESS_NAME = process.name
+    settings.PROCESS_NAME = process.name
 
-    global TYPES
-    TYPES = process.dataview
-    del OUT_SIGNALS[:]
-    del PROCEDURES[:]
-    OUT_SIGNALS.extend(process.output_signals)
-    PROCEDURES.extend(process.procedures)
-    global LPREFIX
+    settings.TYPES = process.dataview
+    del settings.OUT_SIGNALS[:]
+    del settings.PROCEDURES[:]
+    settings.OUT_SIGNALS.extend(process.output_signals)
+    settings.PROCEDURES.extend(process.procedures)
 
-    for each in PROCEDURES:
+    for each in settings.PROCEDURES:
         process.random_generator.update(each.random_generator)
 
     # taste-properties module-specific flag for the Ada backend:
@@ -176,11 +165,11 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         if var_name in no_renames:
             continue
         if var_name in process.aliases.keys():
-            LOCAL_VAR[var_name] = content
+            settings.LOCAL_VAR[var_name] = content
         else:
-            VARIABLES[var_name] = content
+            settings.VARIABLES[var_name] = content
 
-    MONITORS.update(process.monitors)
+    settings.MONITORS.update(process.monitors)
 
     process_level_decl = []
 
@@ -199,10 +188,10 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     for sortname, sortdef in process.user_defined_types.items():
         if sortdef.type.kind == "EnumeratedType":
             choiceTypeModule = process.mapping_sort_module[sortdef.ChoiceTypeName].replace('-', '_')
-            fromMod = f'{choiceTypeModule}.{ASN1SCC}{sortname}'
-            toMod = f'{process.name}_Datamodel.{ASN1SCC}{process.name}_{sortname}'
+            fromMod = f'{choiceTypeModule}.{settings.ASN1SCC}{sortname}'
+            toMod = f'{process.name}_Datamodel.{settings.ASN1SCC}{process.name}_{sortname}'
             choice_selections.append(
-                f"proc To_{sortname} (Src : {fromMod}) return {toMod} is ({toMod}'Enum_Val (Src'Enum_Rep));") # TODO
+                f"proc To_{sortname} (Src : {fromMod}) return {toMod} is ({toMod}'Enum_Val (Src'Enum_Rep));")  # TODO
 
     # Generate the code to declare process-level context
     context_decl = []
@@ -210,7 +199,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # but not in stop condition code, since we reuse the context type
         # of the state machine being observed
 
-        ctxt = (f'{LPREFIX} : {ASN1SCC}{process.name.capitalize()}_Context =\n'
+        ctxt = (f'{settings.LPREFIX} : {settings.ASN1SCC}{process.name.capitalize()}_Context =\n'
                 '      (Init_Done: False,\n       ')
         initial_values = []
         # some parts of the context may have initial values
@@ -258,7 +247,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 continue
             _, qualified, _ = expression(alias_expr)
             context_decl.append(f"{alias_name} : {type_name(alias_sort)} "
-                                f"renames {qualified};") # TODO
+                                f"renames {qualified};")  # TODO
 
         # Add SDL constants (synonyms)
         for const in process.DV.SDL_Constants.values():
@@ -277,7 +266,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                     raise f'ERROR: constant {const.varName} value is not a ground expression'
 
             const_sort = const.type.ReferencedTypeName.replace('-', '_')
-            context_decl.append(f"const {const.varName}:  {ASN1SCC}{const_sort} = {val};")
+            context_decl.append(f"const {const.varName}:  {settings.ASN1SCC}{const_sort} = {val};")
 
         # The choice selections will allow to use the present operator
         # together with a variable of the -selection type
@@ -285,8 +274,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     if stop_condition:
         #  code of stop conditions must use the same type as the main process
         context_decl.append(
-            f'{LPREFIX} : {ASN1SCC}{stop_condition}_Context \
-                        renames {stop_condition}.{stop_condition}_ctxt;') # TODO
+            f'{settings.LPREFIX} : {settings.ASN1SCC}{stop_condition}_Context \
+                        renames {stop_condition}.{stop_condition}_ctxt;')  # TODO
 
     aggreg_start_proc = []
     start_transition = []
@@ -305,17 +294,17 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # Declare start procedure for aggregate states XXX add in C generator
         # should create one START per "via" clause, TODO later
         for name, substates in process.aggregates.items():
-            proc_name = f'proc {name}{SEPARATOR}START'
+            proc_name = f'proc {name}{settings.SEPARATOR}START'
             process_level_decl.append(f'{proc_name};')
             aggreg_start_proc.extend([f'{proc_name} is',
                                       'begin'])
-            aggreg_start_proc.extend(f'Execute_Transition ({subname.statename}{SEPARATOR}START);'
+            aggreg_start_proc.extend(f'Execute_Transition ({subname.statename}{settings.SEPARATOR}START);'
                                      for subname in substates)
-            aggreg_start_proc.extend([f'end {name}{SEPARATOR}START;',
+            aggreg_start_proc.extend([f'end {name}{settings.SEPARATOR}START;',
                                       '\n'])
 
         # Generate the code of the start transition (if process not empty)
-        Init_Done = f'{LPREFIX}.Init_Done = true;'
+        Init_Done = f'{settings.LPREFIX}.Init_Done = true;'
         rand_reset_decl = []
         for rand_g in process.random_generator:
             rand_reset_decl.append(f'Rand_{rand_g}_Pkg.Reset (Gen_{rand_g});');
@@ -360,7 +349,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             # Add context parameter to the process type generics, to make sure
             # the value of the instance is used, not the ASN1 constant of the
             # type.
-            generic_spec += f"   {process.name}_ctxt : {ASN1SCC}Context_{process.name};\n"
+            generic_spec += f"   {process.name}_ctxt : {settings.ASN1SCC}Context_{process.name};\n"
         if has_cs:
             # For continuous signals the runtime must provide Check_Queue
             generic_spec += "   with procedure Check_Queue (Res : out Asn1Boolean);\n"
@@ -454,7 +443,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         ads_template.append(
             f"function Get_State return Chars_Ptr "
             f"is ({process.name.title()}_RI.To_C_Pointer "
-            f"({ASN1SCC}{process.name}_States'Image ({LPREFIX}.State)))"
+            f"({settings.ASN1SCC}{process.name}_States'Image ({settings.LPREFIX}.State)))"
             f" with Export, Convention => C, "
             f'Link_Name => "{process.name.lower()}_state";')
 
@@ -478,7 +467,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             ads_template.append(f'{pi_header};')
             if not proc.external and not generic:
                 # Export for TASTE as a synchronous PI
-                prefix = f'p{SEPARATOR}' if not proc.exported else ''
+                prefix = f'p{settings.SEPARATOR}' if not proc.exported else ''
                 ads_template.append(
                     f'pragma Export (C, {prefix}{proc.inputString},'
                     f' "{process.name.lower()}_PI_{proc.inputString}");')
@@ -488,18 +477,18 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     # Generate the code of internal operators, if needed
     if process.errorstates or process.ignorestates or process.successstates:
-        obs_status = [f'function Observer_State_Status return {ASN1SCC}Observer_State_Kind is',
-                      f'(case {LPREFIX}.State is']
+        obs_status = [f'function Observer_State_Status return {settings.ASN1SCC}Observer_State_Kind is',
+                      f'(case {settings.LPREFIX}.State is']
         if process.errorstates:
-            opts = ' | '.join(f'{ASN1SCC}{st}' for st in process.errorstates)
-            obs_status.append(f'  when {opts} => {ASN1SCC}Error_State,')
+            opts = ' | '.join(f'{settings.ASN1SCC}{st}' for st in process.errorstates)
+            obs_status.append(f'  when {opts} => {settings.ASN1SCC}Error_State,')
         if process.ignorestates:
-            opts = ' | '.join(f'{ASN1SCC}{st}' for st in process.ignorestates)
-            obs_status.append(f'  when {opts} => {ASN1SCC}Ignore_State,')
+            opts = ' | '.join(f'{settings.ASN1SCC}{st}' for st in process.ignorestates)
+            obs_status.append(f'  when {opts} => {settings.ASN1SCC}Ignore_State,')
         if process.errorstates:
-            opts = ' | '.join(f'{ASN1SCC}{st}' for st in process.successstates)
-            obs_status.append(f'  when {opts} => {ASN1SCC}Success_State,')
-        obs_status.append(f'  when others => {ASN1SCC}Regular_State);')
+            opts = ' | '.join(f'{settings.ASN1SCC}{st}' for st in process.successstates)
+            obs_status.append(f'  when {opts} => {settings.ASN1SCC}Success_State,')
+        obs_status.append(f'  when others => {settings.ASN1SCC}Regular_State);')
         obs_status.append('\n')
         taste_template.extend(obs_status)
 
@@ -569,7 +558,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             # Check for nested states to call optional exit procedures
             # (we may exit from more than one state, the exit procedures must
             #  be called in the right order)
-            state_tree = state.split(SEPARATOR)
+            state_tree = state.split(settings.SEPARATOR)
             context = process
             exitlist = []
             current = ''
@@ -581,7 +570,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                         if comp.exit_procedure:
                             exitlist.append(current)
                         context = comp
-                        current = current + SEPARATOR
+                        current = current + settings.SEPARATOR
                         break
             for each in reversed(exitlist):
                 # Here we add a call to the exit procedure of nested states
@@ -593,13 +582,13 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 # INPUT. The continuous signals are not processed here
                 if trans and all(each.startswith(trans_st)
                                  for trans_st in trans.possible_states):
-                    dest.append(f'p{SEPARATOR}{each}{SEPARATOR}exit;')
+                    dest.append(f'p{settings.SEPARATOR}{each}{settings.SEPARATOR}exit;')
 
             if input_def:
                 for inp in input_def.parameters:
                     # Assign the (optional and unique) parameter
                     # to the corresponding process variable
-                    dest.append(f'{LPREFIX}.{inp} := {param_name};')
+                    dest.append(f'{settings.LPREFIX}.{inp} := {param_name};')
                 # Execute the corresponding transition
                 if input_def.transition:
                     dest.append(f'Execute_Transition ({input_def.transition_id});')
@@ -614,7 +603,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             return True
 
         if not instance:
-            taste_template.append(f'case {LPREFIX}.state is')
+            taste_template.append(f'case {settings.LPREFIX}.state is')
 
         def case_state(state):
             ''' Recursive function (in case of state aggregation) to generate
@@ -624,8 +613,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             '''
             if state.endswith('START'):
                 return
-            # taste_template.append(f'when {ASN1SCC}{state} =>')
-            statecase = [f'when {ASN1SCC}{state} =>']
+            # taste_template.append(f'when {settings.ASN1SCC}{state} =>')
+            statecase = [f'when {settings.ASN1SCC}{state} =>']
             input_def = process.input_mapping[signame].get(state)
             if state in process.aggregates.keys():
                 taste_template.extend(statecase)
@@ -637,7 +626,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                     if [a for a in sub.mapping.keys()
                         if a in process.input_mapping[signame].keys()]:
                         taste_template.append('case '
-                                              f'{LPREFIX}.{sub.statename}{SEPARATOR}state is')
+                                              f'{settings.LPREFIX}.{sub.statename}{settings.SEPARATOR}state is')
                         for par in sub.mapping.keys():
                             case_state(par)
                         taste_template.append('when others =>')
@@ -694,18 +683,18 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                                         else "R", sig))
 
             if not instance:
-                ads_template.append(f'procedure RI{SEPARATOR}{sig}{param_spec} '
+                ads_template.append(f'procedure RI{settings.SEPARATOR}{sig}{param_spec} '
                                     f'renames {process.name}_RI.{sig};')
             ri_stub_ads.append(f'procedure {sig}{param_spec};')
             ri_stub_adb.append(f'procedure {sig}{param_spec} is null;')
             #  TASTE generates the pragma import in <function>_ri.ads
             #  therefore do not generate it in the .ads
-            # ads_template.append(f'pragma Import (C, RI{SEPARATOR}{sig}, "{process.name.lower()}_RI_{sig}");')
+            # ads_template.append(f'pragma Import (C, RI{settings.SEPARATOR}{sig}, "{process.name.lower()}_RI_{sig}");')
 
     # for the .ads file, generate the declaration of the external procedures
     for proc in (proc for proc in process.procedures if proc.external):
         sig = proc.inputString
-        ri_header = f'procedure RI{SEPARATOR}{sig}'
+        ri_header = f'procedure RI{settings.SEPARATOR}{sig}'
         params = []
         params_spec = ""
         for param in proc.fpar:
@@ -740,10 +729,10 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         if not generic:
             procname = process.name.lower()
             ads_template.append(
-                f'procedure SET_{timer} (Val : in out {ASN1SCC}T_UInt32) '
+                f'procedure SET_{timer} (Val : in out {settings.ASN1SCC}T_UInt32) '
                 f'renames {process.name}_RI.Set_{timer};')
-            ri_stub_ads.append(f'procedure SET_{timer} (Val : in out {ASN1SCC}T_UInt32);')
-            ri_stub_adb.append(f'procedure SET_{timer} (Val : in out {ASN1SCC}T_UInt32) is null;')
+            ri_stub_ads.append(f'procedure SET_{timer} (Val : in out {settings.ASN1SCC}T_UInt32);')
+            ri_stub_adb.append(f'procedure SET_{timer} (Val : in out {settings.ASN1SCC}T_UInt32) is null;')
             ads_template.append(f'procedure RESET_{timer} '
                                 f'renames {process.name}_RI.Reset_{timer};')
             ri_stub_ads.append(f'procedure RESET_{timer};')
@@ -756,11 +745,11 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # Instance of a process type, all the RIs (including timers) must
         # be gathered to instantiate the package
         pkg_decl = (f"package {process.name}_Instance is new {process.instance_of_name}")
-        ri_list = [(f"RI{SEPARATOR}{sig['name']}", sig['name'])
+        ri_list = [(f"RI{settings.SEPARATOR}{sig['name']}", sig['name'])
                    for sig in process.output_signals]
         if has_cs:
             ri_list.append(("Check_Queue", "Check_Queue"))
-        ri_list.extend([(f"RI{SEPARATOR}{proc.inputString}", proc.inputString)
+        ri_list.extend([(f"RI{settings.SEPARATOR}{proc.inputString}", proc.inputString)
                         for proc in process.procedures if proc.external])
         ri_list.extend([(f"set_{timer}", f"set_{timer}") for timer in process.timers])
         ri_list.extend([(f"reset_{timer}", f"reset_{timer}") for timer in process.timers])
@@ -779,7 +768,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         ads_template.append(f"{pkg_decl};")
         ads_template.append(
             f"function Get_State return chars_ptr "
-            f"is ({process.name}_RI.To_C_Pointer ({process.name}_Instance.{LPREFIX}.State'Img))"
+            f"is ({process.name}_RI.To_C_Pointer ({process.name}_Instance.{settings.LPREFIX}.State'Img))"
             f" with Export, Convention => C, "
             f'Link_Name => "{process.name.lower()}_state";')
 
@@ -859,9 +848,9 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         #     - For each continuous signal generate code (test+transition)
         # XXX add to C backend
         if has_cs:
-            if not MONITORS:
+            if not settings.MONITORS:
                 taste_template.append('--  Process continuous signals')
-                taste_template.append(f'if {LPREFIX}.Init_Done then')
+                taste_template.append(f'if {settings.LPREFIX}.Init_Done then')
                 taste_template.append("Check_Queue (Message_Pending);")
                 taste_template.append('end if;')
                 if not generic:  # not a function type
@@ -897,13 +886,13 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 if statename in each.cs_mapping and each.cs_mapping[statename]:
                     if first_of_aggreg:
                         taste_template.append(
-                            f'if {LPREFIX}.State = {ASN1SCC}{agg_name} then')
+                            f'if {settings.LPREFIX}.State = {settings.ASN1SCC}{agg_name} then')
                         first_of_aggreg = False
                     need_final_endif = True
                     first = "els" if done else ""
                     taste_template.append(
-                        f'if {LPREFIX}.{each.statename}{SEPARATOR}State = '
-                        f'{ASN1SCC}{statename} then')
+                        f'if {settings.LPREFIX}.{each.statename}{settings.SEPARATOR}State = '
+                        f'{settings.ASN1SCC}{statename} then')
                     # Change priority 0 (no priority set) to lowest priority
                     lowest_priority = max(item.priority for item in cs_item)
                     for each in cs_item:
@@ -932,7 +921,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 need_final_endif = False
                 first = "els" if done else ""
                 taste_template.append(
-                    f'{first}if {LPREFIX}.State = {ASN1SCC}{statename}'
+                    f'{first}if {settings.LPREFIX}.State = {settings.ASN1SCC}{statename}'
                     ' then')
             # Change priority 0 (no priority set) to lowest priority
             if cs_item:
@@ -946,7 +935,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 trId = process.transitions.index(provided_clause.transition)
 
                 # check if we are leaving a nested state with a CS
-                state_tree = statename.split(SEPARATOR)
+                state_tree = statename.split(settings.SEPARATOR)
                 context = process
                 exitlist, exitcalls = [], []
                 current = ''
@@ -957,13 +946,13 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                             if comp.exit_procedure:
                                 exitlist.append(current)
                             context = comp
-                            current = current + SEPARATOR
+                            current = current + settings.SEPARATOR
                             break
                 trans = process.transitions[trId]
                 for each in reversed(exitlist):
                     if trans and all(each.startswith(trans_st)
                                      for trans_st in trans.possible_states):
-                        exitcalls.append(f"p{SEPARATOR}{each}{SEPARATOR}exit;")
+                        exitcalls.append(f"p{settings.SEPARATOR}{each}{settings.SEPARATOR}exit;")
 
                 code, loc = generate(provided_clause.trigger,
                                      branch_to=trId, sep=sep, last=last,
@@ -1081,18 +1070,18 @@ def _call_external_function(output, **kwargs) -> str:
             local_decl.extend(p_local)
             # Use a temporary variable to store the timer value
             tmp_id = 'tmp' + str(out['tmpVars'][0])
-            local_decl.append(f'{tmp_id} : {ASN1SCC}T_UInt32;')
+            local_decl.append(f'{tmp_id} : {settings.ASN1SCC}T_UInt32;')
             code.append(f'{tmp_id} := {t_val};')
             code.append(f"SET_{p_id} ({tmp_id});")
             continue
         proc, out_sig = None, None
         try:
-            out_sig, = [sig for sig in OUT_SIGNALS
+            out_sig, = [sig for sig in settings.OUT_SIGNALS
                         if sig['name'].lower() == signal_name.lower()]
         except ValueError:
             # Not an output, try if it is an external or inner procedure
             try:
-                proc, = [sig for sig in PROCEDURES
+                proc, = [sig for sig in settings.PROCEDURES
                          if sig.inputString.lower() == signal_name.lower()]
                 if proc.external:
                     out_sig = proc
@@ -1100,7 +1089,7 @@ def _call_external_function(output, **kwargs) -> str:
                 # Last chance to find it: if it is an exported procedure,
                 # in that case an additional signal with _Transition suffix
                 # exists but is not visible in the model at this point
-                for sig in PROCEDURES:
+                for sig in settings.PROCEDURES:
                     if signal_name.lower() == f'{sig.inputString.lower()}_transition':
                         out_sig = sig
                         need_prefix = False
@@ -1130,7 +1119,7 @@ def _call_external_function(output, **kwargs) -> str:
                 # (If needed, i.e. if argument is not a local variable)
                 if param_direction == 'in' \
                         and (not (isinstance(param, ogAST.PrimVariable)
-                                  and p_id.startswith(LPREFIX))  # NO FIXME WITH CTXT
+                                  and p_id.startswith(settings.LPREFIX))  # NO FIXME WITH CTXT
                              or isinstance(param, ogAST.PrimFPAR)):
                     tmp_id = f'tmp{out["tmpVars"][idx]}'
                     # local_decl.extend(debug_trace())
@@ -1168,16 +1157,16 @@ def _call_external_function(output, **kwargs) -> str:
             name = out["outputName"]
             if list_of_params:
                 params = ', '.join(list_of_params)
-                code.append(f'RI{SEPARATOR}{name}({params});')
+                code.append(f'RI{settings.SEPARATOR}{name}({params});')
 
             else:
-                prefix = f'RI{SEPARATOR}' if need_prefix else ''
+                prefix = f'RI{settings.SEPARATOR}' if need_prefix else ''
                 code.append(f'{prefix}{name};')
         else:
             # inner procedure call without a RETURN statement
             # retrieve the procedure signature
             ident = proc.inputString
-            p, = [p for p in PROCEDURES if p.inputString.lower() == ident.lower()]
+            p, = [p for p in settings.PROCEDURES if p.inputString.lower() == ident.lower()]
 
             list_of_params = []
             for idx, param in enumerate(out.get('params', [])):
@@ -1203,9 +1192,9 @@ def _call_external_function(output, **kwargs) -> str:
                 # no need to use temporary variables, we are in pure Ada
                 list_of_params.append(p_id)
             if list_of_params:
-                code.append(f'p{SEPARATOR}{proc.inputString}({", ".join(list_of_params)});')
+                code.append(f'p{settings.SEPARATOR}{proc.inputString}({", ".join(list_of_params)});')
             else:
-                code.append(f'p{SEPARATOR}{proc.inputString};')
+                code.append(f'p{settings.SEPARATOR}{proc.inputString};')
     return code, local_decl
 
 
@@ -1245,7 +1234,7 @@ def _task_forloop(task, **kwargs):
             for x in iterable (a SEQUENCE OF)
         '''
     stmt, local_decl = [], []
-    local_scope = dict(LOCAL_VAR)
+    local_scope = dict(settings.LOCAL_VAR)
     if task.comment:
         stmt.extend(traceability(task.comment))
     stmt.extend(traceability(task))
@@ -1288,11 +1277,11 @@ def _task_forloop(task, **kwargs):
                                     stop=stop_str,
                                     step=step_str))
             # Add iterator to the list of local variables
-            LOCAL_VAR.update({loop['var']: (loop['type'], None)})
+            settings.LOCAL_VAR.update({loop['var']: (loop['type'], None)})
         else:
             # case of form: FOR x in SEQUENCE OF
             # Add iterator to the list of local variables
-            LOCAL_VAR.update({loop['var']: (loop['type'], None)})
+            settings.LOCAL_VAR.update({loop['var']: (loop['type'], None)})
 
             list_stmt, list_str, list_local = expression(loop['list'])
             basic_type = find_basic_type(loop['list'].exprType)
@@ -1300,7 +1289,7 @@ def _task_forloop(task, **kwargs):
 
             stmt.extend(list_stmt)
             local_decl.extend(list_local)
-            stmt.extend([f'for {loop["var"]}_idx, {loop["var"]}_val in {list_payload}:',])
+            stmt.extend([f'for {loop["var"]}_idx, {loop["var"]}_val in {list_payload}:', ])
         try:
             code_trans, local_trans = generate(loop['transition'])
             if local_trans:
@@ -1309,8 +1298,8 @@ def _task_forloop(task, **kwargs):
         except AttributeError:
             stmt.append('discard')
     # Restore list of local variables
-    LOCAL_VAR.clear()
-    LOCAL_VAR.update(local_scope)
+    settings.LOCAL_VAR.clear()
+    settings.LOCAL_VAR.update(local_scope)
     return stmt, local_decl
 
 
@@ -1357,11 +1346,11 @@ def _transition(tr, **kwargs):
                     # still the old state, there is a risk of infinite recursion)
                     if not tr.terminator.substate:
                         code.append(
-                            f'{LPREFIX}.State := {ASN1SCC}{tr.terminator.inputString};')
+                            f'{settings.LPREFIX}.State := {settings.ASN1SCC}{tr.terminator.inputString};')
                     else:
                         # We may be already in a substate
-                        code.append(f'{LPREFIX}.{tr.terminator.substate}{SEPARATOR}State :='
-                                    f' {ASN1SCC}{tr.terminator.inputString};')
+                        code.append(f'{settings.LPREFIX}.{tr.terminator.substate}{settings.SEPARATOR}State :='
+                                    f' {settings.ASN1SCC}{tr.terminator.inputString};')
                     # Call the START function of the state aggregation
                     code.append(f'{tr.terminator.next_id};')
                     code.append('trId := -1;')
@@ -1369,10 +1358,10 @@ def _transition(tr, **kwargs):
                     code.append(f'trId := {str(tr.terminator.next_id)};')
                     if tr.terminator.next_id == -1:
                         if not tr.terminator.substate:  # XXX add to C generator
-                            code.append(f'{LPREFIX}.State := {ASN1SCC}{tr.terminator.inputString};')
+                            code.append(f'{settings.LPREFIX}.State := {settings.ASN1SCC}{tr.terminator.inputString};')
                         else:
-                            code.append(f'{LPREFIX}.{tr.terminator.substate}{SEPARATOR}State :='
-                                        f' {ASN1SCC}{tr.terminator.inputString};')
+                            code.append(f'{settings.LPREFIX}.{tr.terminator.substate}{settings.SEPARATOR}State :='
+                                        f' {settings.ASN1SCC}{tr.terminator.inputString};')
                 else:
                     # "nextstate -": switch case to re-run the entry transition
                     # in case of a composite state or state aggregation
@@ -1382,14 +1371,14 @@ def _transition(tr, **kwargs):
                     if ns != "-*" and any(next_id
                                           for next_id in tr.terminator.candidate_id.keys()
                                           if next_id != -1):
-                        code.append(f'case {LPREFIX}.State is')
+                        code.append(f'case {settings.LPREFIX}.State is')
                         for nid, sta in tr.terminator.candidate_id.items():
                             if nid != -1:
                                 if tr.terminator.next_is_aggregation:
                                     statement = ns != '-*' and f'{nid};' or 'trId := -1;'
                                 else:
                                     statement = f'trId := {nid};'
-                                states_prefix = (f"{ASN1SCC}{s}" for s in sta)
+                                states_prefix = (f"{settings.ASN1SCC}{s}" for s in sta)
                                 joined_states = " | ".join(states_prefix)
                                 code.extend(
                                     [f'when {joined_states} =>',
@@ -1418,13 +1407,13 @@ def _transition(tr, **kwargs):
                     # state until all the substates are returned. Then only
                     # call the overall state aggregation exit procedures.
                     code.append(
-                        f'{LPREFIX}.{tr.terminator.substate}{SEPARATOR}State '
-                        f':= {ASN1SCC}state{SEPARATOR}end;')
+                        f'{settings.LPREFIX}.{tr.terminator.substate}{settings.SEPARATOR}State '
+                        f':= {settings.ASN1SCC}state{settings.SEPARATOR}end;')
                     cond = '{ctxt}.{sib}{sep}State = {asn1scc}state{sep}end'
                     conds = [cond.format(sib=sib,
-                                         ctxt=LPREFIX,
-                                         sep=SEPARATOR,
-                                         asn1scc=ASN1SCC)
+                                         ctxt=settings.LPREFIX,
+                                         sep=settings.SEPARATOR,
+                                         asn1scc=settings.ASN1SCC)
                              for sib in tr.terminator.siblings
                              if sib.lower() != tr.terminator.substate.lower()]
                     code.append(f'if {" and ".join(conds)} then')
@@ -1483,7 +1472,3 @@ def _floating_label(label, **kwargs):
 @generate.register(ogAST.Procedure)
 def _inner_procedure(proc, **kwargs):
     not_implemented_error()
-
-
-
-

@@ -1,0 +1,12 @@
+
+
+PROCESS_NAME = ""
+VARIABLES = {}
+MONITORS = {}
+LOCAL_VAR = {}
+TYPES = None
+PROCEDURES = []
+OUT_SIGNALS = []
+SEPARATOR = "___"
+LPREFIX = u'context'
+ASN1SCC = 'asn1Scc'
