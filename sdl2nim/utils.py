@@ -220,19 +220,24 @@ def procedure_header(proc, SEPARATOR):
 def format_nim_code(stmts):
     ''' Indent properly the Nim code ''' # TODO
     indent = 0
-    indent_pattern = '   '
+    indent_pattern = ' '*4
+    in_label = False
     for line in stmts[:-1]:
         elems = line.strip().split()
-        if elems and elems[0].startswith(('when', 'end', 'elsif', 'else')):
+        if elems and elems[0].startswith(('elif', 'else', 'of')):
             indent = max(indent - 1, 0)
-        if elems and elems[-1] == 'case;':  # Corresponds to end case;
+        if elems and elems[0] == '#' and 'end' in elems[1]:
             indent = max(indent - 1, 0)
+            if 'case' in elems[-1]:
+                indent = max(indent - 1, 0)
         if line:
             yield indent_pattern * indent + line
-        if elems and elems[-1] in ('is', 'then', 'loop', 'declare'):
+        if elems and any([char in elems[-1] for char in ('=', ':')]) and "#" not in elems[0]:
             indent += 1
-        if elems and elems[0] in ('begin', 'case', 'else', 'when'):
+        if elems and elems[0] in ('case', 'else'):
             indent += 1
+        if elems and elems[0] in ('return',):
+            indent = max(indent - 1, 0)
         if not elems:  # newline -> decrease indent
-            indent -= 1
+            indent = max(indent - 1, 0)
     yield stmts[-1]

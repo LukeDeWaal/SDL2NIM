@@ -1,0 +1,17 @@
+DV DEFINITIONS ::=
+
+BEGIN
+
+MyInt ::= INTEGER (0..255)
+
+MyBool ::= BOOLEAN
+
+MyEnum ::= ENUMERATED { hello, world }
+
+MySeq ::= SEQUENCE {
+   a MyInt,
+   b MyBool,
+   c MyEnum
+}
+
+END

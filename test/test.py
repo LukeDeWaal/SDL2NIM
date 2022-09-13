@@ -13,6 +13,6 @@ if __name__ == "__main__":
     path = os.path.dirname(files[0])
     os.chdir(path or '.')
     ast, warnings, errors = ogParser.parse_pr(files=files)
+    os.chdir(os.path.dirname(__file__)+'/out/')
 
     errors = NimGenerator.generate(ast.processes[0], shared=False, taste=False)
-    os.chdir(cwd)
