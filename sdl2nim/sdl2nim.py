@@ -25,6 +25,10 @@ def parse_args():
                         version=__version__)
     parser.add_argument('--output-dir', dest='output_dir', action='store', type=str,
                         metavar='path', default='.', help='set output directory (default .)')
+    parser.add_argument('--shared', action='store_true', default=False,
+                        help='Generate getters/setters to access internal state')
+    parser.add_argument('--taste', dest='taste_target', action='store_true',
+                        help='Generate code for TASTE targets')
     parser.add_argument('files', metavar='file.pr', type=str, nargs='*',
                         help='SDL file(s)')
     return parser.parse_args()
@@ -50,13 +54,16 @@ def sdl2nim() -> int:
 
     # generate IF code
     try:
-        NimGenerator.generate(ast.processes[0], output_dir=options.output_dir)
+        NimGenerator.generate(ast.processes[0],
+                              simu=options.shared,
+                              taste=options.taste_target,
+                              options=vars(options))
     except (TypeError, ValueError, NameError) as err:
         err = str(err).replace(u'\u00fc', '.')
         err = err.encode('utf-8')
         LOG.error(str(err))
         LOG.error(str(traceback.format_exc()))
-        LOG.error('IF code generation failed')
+        LOG.error('Nim code generation failed')
         return 1
 
     return 0

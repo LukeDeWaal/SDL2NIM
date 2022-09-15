@@ -2,7 +2,7 @@
 
 rm -rf out
 mkdir -p out
-asn1scc -o out -equal -c test_types.asn
+asn1scc -o out -equal -c $1.asn
 # copy the fixed version of the asn1 runtime header
 # (contains type defintiions that c2nim fails to convert)
 cp asn1crt.nim out
@@ -10,6 +10,6 @@ cp asn1crt.nim out
 cp asn.nim out
 cd out
 # Generate the bindings to give access to the ASN.1 types in nim
-c2nim --importc test_types.h
+c2nim --importc $1.h
 gcc -c *.c
-nim c -l:*.o --run asn
+nim c -l:*.o asn

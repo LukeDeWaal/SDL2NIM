@@ -1,18 +1,23 @@
 import inspect
 import os
-from itertools import product
-from multiprocessing.spawn import import_main_path
-import re
+from datetime import datetime
+from functools import singledispatch
+from itertools import product, chain
 
 import logging
-import opengeode
+import opengeode as og
 from . import settings
 
-from functools import singledispatch
 from opengeode import ogAST, Helper
 
-from .utils import not_implemented_error, traceability, ia5string_raw, is_numeric, format_nim_code
-from .Expressions import (expression, array_content, find_basic_type, string_payload, type_name, append_size,
+from .utils import (not_implemented_error,
+                    traceability, ia5string_raw,
+                    is_numeric, format_nim_code,
+                    generate_nim_definitions)
+
+from .Expressions import (expression, array_content,
+                          find_basic_type, string_payload,
+                          type_name, append_size,
                           external_ri_list, procedure_header)
 
 from typing import List, Tuple
@@ -127,6 +132,9 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         generic = False
         process_instance = process
 
+    options = kwargs.get('options', {})
+    output_dir = options['output_dir']
+
     settings.PROCESS_NAME = process.name
 
     settings.TYPES = process.dataview
@@ -138,7 +146,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     for each in settings.PROCEDURES:
         process.random_generator.update(each.random_generator)
 
-    # taste-properties module-specific flag for the Ada backend:
+    # taste-properties module-specific flag for the Nim backend:
     # import the state data from an external module
     stop_condition = kwargs["ppty_check"] if "ppty_check" in kwargs else ""
 
@@ -155,6 +163,9 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     #  Prepare the AST for code generation (flatten states, etc.)
     no_renames = Helper.code_generation_preprocessing(process)
+
+    cwd = os.getcwd()
+    os.chdir(output_dir)
 
     if not stop_condition:
         Helper.generate_asn1_datamodel(process)
@@ -199,8 +210,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # but not in stop condition code, since we reuse the context type
         # of the state machine being observed
 
-        ctxt = (f'{settings.LPREFIX} : {settings.ASN1SCC}{process.name.capitalize()}_Context =\n'
-                '      (Init_Done: False,\n       ')
+        ctxt = (f'var {settings.LPREFIX}* : {process.name.capitalize()}_Context = {process.name.capitalize()}_Context('
+                'init_done: false, ')
         initial_values = []
         # some parts of the context may have initial values
         for var_name, (var_type, def_value) in process.variables.items():
@@ -230,8 +241,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 initial_values.append(f'{var_name}: {dstr}')
 
         if initial_values:
-            ctxt += ",\n      ".join(initial_values) + ",\n      "
-        # ctxt += "others => <>);"
+            ctxt += ", ".join(initial_values)
+        ctxt += ");"
         context_decl.append(ctxt)
 
         # Add monitors, that are variables that must be set by an external
@@ -315,18 +326,23 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             if process.transitions else 'pass',
             Init_Done,
             'return',
+            '\n',
+            '### ------ PROGRAM ENTRYPOINT ------ ###',
             'Startup()']
 
     # Generate the TASTE template
     try:
-        asn1_modules = '\n'.join([f"with {dv.replace('-', '_')};\nuse {dv.replace('-', '_')};"
-                                  for dv in process.asn1Modules])
-        if process.asn1Modules:
-            asn1_modules += '\nwith adaasn1rtl;\nuse adaasn1rtl;'
+        asn1_modules = \
+        'import\n' \
+       f'    asn1crt, {process.name}_datamodel\n'
     except TypeError:
-        asn1_modules = '--  No ASN.1 data types are used in this model'
+        asn1_modules = '###  No ASN.1 data types are used in this model'
 
-    taste_template = ['### This file was generated automatically by OpenGEODE: DO NOT MODIFY IT !']
+    taste_template = []
+    template_str = '' \
+                   "\n\n\n### ------ IMPLEMENTATION ------ ###\n\n\n"
+
+    taste_template.append(template_str)
 
     has_cs = any(process.cs_mapping.values())
 
@@ -347,26 +363,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     if instance:
         instance_decl = f"with {process.instance_of_name};"
 
-    # print process.fpar
-    # FPAR could be set for Context Parameters. They are available here
 
-    # Generate the source file (.ads) header
-
-    # Stop conditions must import the SDL model they observe
-    imp_str = f"with {stop_condition}; use {stop_condition};" \
-        if stop_condition else ''
-
-    imp_datamodel = (f"with {process.name}_Datamodel; "
-                     f"use {process.name}_Datamodel;") \
-        if not stop_condition and not instance else (
-        f"with {stop_condition}_Datamodel; "
-        f"use {stop_condition}_Datamodel;"
-        if stop_condition else "")
-
-    imp_ri = f"with {process.name}_RI;" if not generic else ""
-
-    rand = ('with Ada.Numerics.Discrete_Random;'
-            if process.random_generator else "")
     rand_decl = []
     for each in process.random_generator:
         rand_decl.extend([
@@ -376,39 +373,32 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             f'Gen_{each} : Rand_{each}_Pkg.Generator;',
             f'Num_{each} : Rand_{each}_ty;'])
 
-    nim_decl_template = [f'''\
-    -- This file was generated automatically by OpenGEODE: DO NOT MODIFY IT !
-
-    {asn1_modules}
-    {imp_datamodel}
-    {imp_str}
-    {imp_ri}
-    {instance_decl}
-    {rand}
-    {generic_spec}'''.strip() + f'''
-    package {process.name} with Elaborate_Body is''']
+    nim_decl_template = [
+                '### This file was generated automatically by OpenGEODE: DO NOT MODIFY IT !\n' 
+                f'### Generated on: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}\n' 
+                '\n' 
+                f'{asn1_modules}\n\n'
+                "\n\n### ------ DECLARATION ------ ###\n\n"]
 
     ri_stub_ads = [f'''\
-    --  This file is a stub for the implementation of the required interfaces
-    --  It is normally overwritten by TASTE with the actual connection to the
-    --  middleware. If you use Opengeode independently from TASTE you must
-    --  edit the .adb (body) with your own implementation of these functions.
-    --  The body stub will be generated only once.
+    ###  This file is a stub for the implementation of the required interfaces
+    ###  It is normally overwritten by TASTE with the actual connection to the
+    ###  middleware. If you use Opengeode independently from TASTE you must
+    ###  edit the .adb (body) with your own implementation of these functions.
+    ###  The body stub will be generated only once.
 
     {asn1_modules}
 
-    package {process.name}_RI is
-
-       --  In TASTE, used to return the state as char * (but uses malloc so
-       --  just return null here - feel free to implement it differently)
+    ###  In TASTE, used to return the state as char * (but uses malloc so
+    ###  just return null here - feel free to implement it differently)
        function To_C_Pointer (State_As_String : String) return Chars_Ptr is
           (Null_Ptr);
 
     ''']
-    ri_stub_adb = [f'''--  Stub generated by OpenGEODE.
-    --  You can edit this file, it will not be overwritten
+    ri_stub_adb = [f'''###  Stub generated by OpenGEODE.
+    ###  You can edit this file, it will not be overwritten
 
-    package body {process.name}_RI is''']
+    ''']
 
     dll_api = []
     nim_decl_template.extend(rand_decl)
@@ -419,18 +409,11 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # Add function allowing to trace current state as a string
         # This uses malloc and should be generated only for Linux
         # when Debug is ON
-        nim_decl_template.append(
-            f"function Get_State return Chars_Ptr "
-            f"is ({process.name.title()}_RI.To_C_Pointer "
-            f"({settings.ASN1SCC}{process.name}_States'Image ({settings.LPREFIX}.State)))"
-            f" with Export, Convention => C, "
-            f'Link_Name => "{process.name.lower()}_state";')
+        pass # TODO
 
     # Declare procedure Startup in .ads
     if not generic:
-        nim_decl_template.append(f'proc Startup'
-                            f' with Export, Convention => C,'
-                            f' Link_Name => "{process.name}_startup";')
+        nim_decl_template.append('proc Startup() {.exportc.} ;')
     else:  # function type
         nim_decl_template.append(f'proc Startup;')
 
@@ -518,13 +501,12 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             pi_header += f'({param_name}: {typename}): {typename}'
 
         # Add declaration of the provided interface in the .ads file
-        nim_decl_template.append(f'--  Provided interface "{signame}"')
-        nim_decl_template.append(pi_header + ';')
+        nim_decl_template.append(f'###  Provided interface "{signame}"')
+        nim_decl_template.append(pi_header)
 
         if not generic and not ignore_export:
-            nim_decl_template.append(
-                f'pragma Export(C, {signame},'
-                f' "{process.name.lower()}_PI_{signame}");')
+            nim_decl_template[-1] += ' {.exportc.} '
+        nim_decl_template[-1] += ';'
 
         pi_header += ' ='
         taste_template.append(pi_header)
@@ -663,8 +645,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                                         else "R", sig))
 
             if not instance:
-                nim_decl_template.append(f'procedure RI{settings.SEPARATOR}{sig}{param_spec} '
-                                    f'renames {process.name}_RI.{sig};')
+                nim_decl_template.append(f'const RI{settings.SEPARATOR}{sig} '
+                                    f'= {process.name}_RI.{sig};')
             ri_stub_ads.append(f'proc {sig}{param_spec};')
             ri_stub_adb.extend([f'proc {sig}{param_spec} =', 'pass'])
             #  TASTE generates the pragma import in <function>_ri.ads
@@ -674,7 +656,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     # for the .ads file, generate the declaration of the external procedures
     for proc in (proc for proc in process.procedures if proc.external):
         sig = proc.inputString
-        ri_header = f'procedure RI{settings.SEPARATOR}{sig}'
+        procname = f'RI{settings.SEPARATOR}{sig}'
+        ri_header = f'proc {procname}'
         in_params = []
         out_params = []
         params_spec = ""
@@ -688,17 +671,20 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
         if in_params:
             params_spec = f' ({", ".join(in_params)})'
-            ri_header += params_spec
+        else:
+            params_spec = '()'
+
         if out_params:
             params_spec += ':' + f' ({", ".join(out_params)})'
-            ri_header += params_spec
+
+        ri_header += params_spec
 
         if not generic:
             if not instance:
                 # Type and instance do not need this declarations, only standalone
                 # processes.
-                nim_decl_template.append(f'--  Synchronous Required Interface "{sig}"')
-                nim_decl_template.append(f'{ri_header} renames {process.name}_RI.{sig};')
+                nim_decl_template.append(f'###  Synchronous Required Interface "{sig}"')
+                nim_decl_template.append(f'const {procname}* = {process.name}_RI.{sig};')
             ri_stub_ads.append(f'proc {sig}{params_spec};')
             ri_stub_adb.extend([f'proc {sig}{params_spec} =', 'pass'])
 
@@ -787,7 +773,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     # Generate the code of the Execute_Transition  procedure, if needed
     if process.transitions and not instance:
         taste_template.append('proc Execute_Transition (Id : asn1SccSint) =')
-        taste_template.append('trId : asn1SccSint = Id;')
+        taste_template.append('var ltrId : asn1SccSint = Id;')
         if has_cs:
             taste_template.append('Message_Pending : asn1bool = true;')
 
@@ -963,22 +949,19 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     # Add code of the package elaboration
     taste_template.extend(start_transition)
-    taste_template.append(f'# end {process.name};')
+    # taste_template.append(f'# end {process.name};')
 
-    nim_decl_template.append(f'# end {process.name};')
+    #nim_decl_template.append(f'# end {process.name};')
 
     ri_stub_ads.append(f'# end {process.name}_RI;')
     ri_stub_adb.append(f'# end {process.name}_RI;')
 
     with open(process.name.lower() + os.extsep + 'nim', 'wb') as nim_file:
-        code = '\n'.join(format_nim_code(taste_template)).encode('latin1')
+        code = '\n'.join(format_nim_code(nim_decl_template)).encode('latin1')
+        code += '\n'.join(format_nim_code(taste_template)).encode('latin1')
         nim_file.write(code)
 
-    with open(process.name.lower() + os.extsep + 'ads', 'wb') as nim_file:
-        nim_file.write(
-            '\n'.join(format_nim_code(nim_decl_template)).encode('latin1'))
-
-    if not taste:
+    if False: #not taste:
         with open(f"{process.name.lower()}_ri.ads", "wb") as ri_stub:
             ri_stub.write("\n".join(format_nim_code(ri_stub_ads)).encode('latin1'))
         stub_adb = f'{process.name.lower()}_ri.adb'
@@ -1000,6 +983,10 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # determine if Check_Queue is needed
         process_instance.cs_mapping = process.cs_mapping
         generate(process_instance, simu, instance=True, taste=taste)
+
+    generate_nim_definitions(process.name, process.filename)  # TODO
+
+    os.chdir(cwd)
 
 
 @generate.register(ogAST.Output)
@@ -1208,7 +1195,7 @@ def _task_informal_text(task, **kwargs):
     code = []
     if task.comment:
         code.extend(traceability(task.comment))
-    code.extend(['### ' + text.replace('\n', '\n-- ') for text in task.elems])
+    code.extend(['### ' + text.replace('\n', '\n### ') for text in task.elems])
     return code, []
 
 
@@ -1250,6 +1237,7 @@ def _task_forloop(task, **kwargs):
 
             local_decl.extend(stop_local)
             stmt.extend(stop_stmt)
+            stmt.append(f'var {loop["var"]};')
             if loop['range']['step'] == 1:
                 stmt.append('for {it} in {start}{stop}:'
                             .format(it=loop['var'],
@@ -1275,6 +1263,7 @@ def _task_forloop(task, **kwargs):
 
             stmt.extend(list_stmt)
             local_decl.extend(list_local)
+            stmt.extend([f'var {loop["var"]}_idx;', f'var {loop["var"]}_val;'])
             stmt.extend([f'for {loop["var"]}_idx, {loop["var"]}_val in {list_payload}:', ])
         try:
             code_trans, local_trans = generate(loop['transition'])
@@ -1458,4 +1447,127 @@ def _floating_label(label, **kwargs):
 
 @generate.register(ogAST.Procedure)
 def _inner_procedure(proc, **kwargs):
-    not_implemented_error()
+    ''' Generate the code for a procedure - does not support states '''
+    code = []
+    local_decl = []
+    # TODO: Update the global list of procedures
+    # with procedure defined inside the current procedure
+    # Not critical: the editor forbids procedures inside procedures
+
+    # Save variable scopes (as local variables may shadow process variables)
+    outer_scope = dict(settings.VARIABLES)
+    local_scope = dict(settings.LOCAL_VAR)
+    settings.VARIABLES.update(proc.variables)
+    # Note: here we ignore locally-declared monitorings.. they should be
+    # defined at process level (but this is not checked in the parser)
+    # Store local variables in global context
+    settings.LOCAL_VAR.update(proc.variables)
+    # Also add procedure parameters in scope
+    for var in proc.fpar:
+        elem = {var['name']: (var['type'], None)}
+        settings.VARIABLES.update(elem)
+        settings.LOCAL_VAR.update(elem)
+
+    # Build the procedure signature (function if it can return a value)
+    pi_header = procedure_header(proc)
+    if not proc.exported:
+        local_decl.append(pi_header + ';')
+
+    if proc.external:
+        # Inner procedures declared external by the user: pragma import
+        # the C symbol with the same name. Overrules the pragma import from
+        # taste for required interfaces.
+        local_decl.append(f'pragma Import (C, p{settings.SEPARATOR}{proc.inputString}, '
+                          f'"{proc.inputString}");')
+    else:
+        # Generate the code for the procedure itself
+        # local variables and code of the START transition
+        # Recursively generate the code for inner-defined procedures
+        for inner_proc in proc.content.inner_procedures:
+            inner_code, inner_local = generate(inner_proc)
+            local_decl.extend(inner_local)
+            code.extend(inner_code)
+        code.append(f'{pi_header} is')
+        for var_name, (var_type, def_value) in proc.variables.items():
+            typename = type_name(var_type)
+            if def_value:
+                # Expression must be a ground expression, i.e. must not
+                # require temporary variable to store computed result
+                dst, dstr, dlocal = expression(def_value, readonly=1)
+                varbty = find_basic_type(var_type)
+
+                if varbty.kind.startswith('Integer') and \
+                        isinstance(def_value, (ogAST.PrimOctetStringLiteral,
+                                               ogAST.PrimBitStringLiteral)):
+                    dstr = str(def_value.numeric_value)
+
+                elif varbty.kind in ('SequenceOfType',
+                                     'OctetStringType',
+                                     'BitStringType'):
+                    dstr = array_content(def_value, dstr, varbty)
+
+                elif varbty.kind == 'IA5StringType':
+                    dstr = ia5string_raw(def_value)
+                assert not dst and not dlocal, 'Ground expression error'
+            default = f' := {dstr}' if def_value else ''
+            code.append(f'{var_name} : {typename}{default};')
+
+        # Look for labels in the diagram and transform them in floating labels
+        Helper.inner_labels_to_floating(proc)
+
+        if proc.exported and proc.content.start is not None:
+            # Exported procedure end calling the corresponding transition
+            # procedure that allows user to change state after RPC call
+            # We need to update all the transitions of the procedure
+            # (including floating labels) that contain a return statement
+            # andadd the call to the _Transition procedure before
+            trans_with_return = []
+            for each in chain([proc.content.start.transition],
+                              (lab.transition for lab in proc.content.floating_labels)):
+                def rec_transition(trans: ogAST.Transition):
+                    if trans.terminator:
+                        if trans.terminator.kind == 'return':
+                            trans_with_return.append(trans)
+                    elif isinstance(trans.actions[-1], ogAST.Decision):
+                        # There is no terminator, so the transition may finish
+                        # with a DECISION, we must check it recursively
+                        for answer in trans.actions[-1].answers:
+                            rec_transition(answer.transition)
+
+                rec_transition(each)
+
+            for trans in trans_with_return:
+                call_trans = ogAST.ProcedureCall()
+                call_trans.inputString = f'{proc.inputString}_Transition'
+                trans_proc = f'{proc.inputString}_Transition'
+                call_trans.output = [{'outputName': trans_proc,
+                                      'params': [], 'tmpVars': []}]
+                trans.actions.append(call_trans)
+
+        if proc.content.start and proc.content.start.transition:
+            tr_code, tr_decl = generate(proc.content.start.transition)
+        else:
+            tr_code, tr_decl = ['null;  ###  Empty procedure'], []
+        # Generate code for the floating labels
+        code_labels = []
+        for label in proc.content.floating_labels:
+            code_label, label_decl = generate(label)
+            code_labels.extend(code_label)
+            tr_decl.extend(label_decl)
+        code.extend(set(tr_decl))
+        code.append('begin')
+        code.extend(tr_code)
+        code.extend(code_labels)
+        if proc.exported:
+            code.append(f'end {proc.inputString};')
+        else:
+            code.append(f'end p{settings.SEPARATOR}{proc.inputString};')
+    code.append('\n')
+
+    # Reset the scope to how it was prior to the procedure definition
+    settings.VARIABLES.clear()
+    settings.VARIABLES.update(outer_scope)
+    settings.LOCAL_VAR.clear()
+    settings.LOCAL_VAR.update(local_scope)
+
+    return code, local_decl

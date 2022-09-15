@@ -1,4 +1,5 @@
-import test_types
+import "asn1crt"
+import "test_types"
 
 echo "hello, world"
 

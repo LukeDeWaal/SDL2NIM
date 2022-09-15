@@ -4,6 +4,8 @@ BEGIN
 
 MyInt ::= INTEGER (0..255)
 
+MyInteger ::= INTEGER (-16384 .. 16383)
+
 MyBool ::= BOOLEAN
 
 MyEnum ::= ENUMERATED { hello, world }
