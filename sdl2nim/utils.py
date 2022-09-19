@@ -100,11 +100,13 @@ def string_payload(prim, nim_string, TYPES):
         return ''
     prim_basic = __find_basic_type(TYPES, prim.exprType)
     payload = ''
-    if prim_basic.kind in ('SequenceOfType', 'OctetStringType', 'BitStringType'):
+    if prim_basic.kind in ('OctetStringType', 'BitStringType'):
         if int(prim_basic.Min) != int(prim_basic.Max):
             payload = f'[0 ..< len({nim_string})]'
         else:
             payload = ''
+    elif prim_basic.kind == 'SequenceOfType':
+        payload = f'.arr[0 ..< {nim_string}.nCount.int32]'
     return payload
 
 
@@ -131,12 +133,16 @@ def array_content(prim, values, asnty, expression: callable):
     if isinstance(prim, ogAST.PrimStringLiteral):
         df = '0'
     else:
-        # Find a default value for the "others" field in case of SEQOF
+        # Find a default value for the "others" field in case of SEQOF --> Not necessary in Nim
         _, df, _ = expression(prim.value[0], readonly=1)
         if isinstance(prim.value[0], (ogAST.PrimSequenceOf,
                                       ogAST.PrimStringLiteral)):
             df = array_content(prim.value[0], df, asnty.type, expression)
-    return f"[{values}]" # TODO
+    split_vals = values.split(', ')
+    first_val = split_vals[0]
+    first_val = f"{first_val}.{type_name(asnty.type)}"
+    split_vals[0] = first_val
+    return f"[{', '.join(split_vals)}]" # TODO
 
 
 def child_spelling(name, bty):
@@ -247,14 +253,22 @@ def generate_nim_definitions(procname: str, path: str):
 
 def format_nim_code(stmts):
     ''' Indent properly the Nim code ''' # TODO
+
+    if not hasattr(format_nim_code, 'prev'):
+        format_nim_code.prev = ''
+
     indent = 0
     indent_pattern = ' '*4
-    in_label = False
     for line in stmts[:-1]:
         elems = line.strip().split()
+        if elems and elems[0].startswith('label'):
+            if format_nim_code.prev.startswith('# end label'):
+                indent = indent
+            else:
+                indent = max(indent - 1, 0)
         if elems and elems[0].startswith(('elif', 'else', 'of')):
             indent = max(indent - 1, 0)
-        if elems and elems[0] == '#' and 'end' in elems[1]:
+        if elems and elems[0] == '#' and 'end' in elems[1] and not format_nim_code.prev.startswith('# end label'):
             indent = max(indent - 1, 0)
             if 'case' in elems[-1]:
                 indent = max(indent - 1, 0)
@@ -268,6 +282,8 @@ def format_nim_code(stmts):
             indent = max(indent - 1, 0)
         if not elems:  # newline -> decrease indent
             indent = max(indent - 1, 0)
+
+        format_nim_code.prev = line
     yield stmts[-1]
 
 

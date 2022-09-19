@@ -12,7 +12,7 @@ from . import NimGenerator, utils
 LOG = logging.getLogger(__name__)
 
 __all__ = ['sdl2nim']
-__version__ = '0.1'
+__version__ = '0.2'
 
 
 

@@ -78,10 +78,10 @@ def _primary_variable(prim, **kwargs):
     if (not exists) or is_local(prim.value[0], settings.LOCAL_VAR):  # Local Variable Access
         sep = ''
     else:  # Global Variable Access
-        sep = ''
+        sep = settings.LPREFIX + '.'
 
     # No special action required yet
-    nim_string = f'{prim.value[0]}'
+    nim_string = f'{sep}{prim.value[0]}'
 
     return [], str(nim_string), []
 
@@ -412,7 +412,7 @@ def _assign_expression(expr, **kwargs):
         pass
 
     elif basic_left.kind in ('SequenceOfType', 'OctetStringType', 'BitStringType'):
-        rlen = f"{right_str}'Length"
+        rlen = f"{right_str}.len"
 
         if isinstance(expr.right, ogAST.PrimSubstring):
             if not isinstance(expr.left, ogAST.PrimSubstring):
@@ -435,8 +435,9 @@ def _assign_expression(expr, **kwargs):
         elif isinstance(expr.right, (ogAST.PrimSequenceOf,
                                      ogAST.PrimStringLiteral)):
             if not isinstance(expr.left, ogAST.PrimSubstring):
-                strings.append(
-                    f"{left_str} = {array_content(expr.right, right_str, basic_left)};")
+                strings.extend([
+                    f"{left_str}.nCount = len({array_content(expr.right, right_str, basic_left)}).cint",
+                    f"{left_str}.arr[0 ..< {left_str}.nCount] = @{array_content(expr.right, right_str, basic_left)};"])
             else:
                 # left is substring: no length, direct assignment
                 strings.append(f"{left_str} = ({right_str});")
