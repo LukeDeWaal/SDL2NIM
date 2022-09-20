@@ -49,7 +49,6 @@ const
 type
     asn1Real32* = cfloat
     asn1Real64* = cdouble
-    asn1byte* = byte
     asn1bool* = bool
     asn1SccSint16* = int16
     asn1SccUint16* = uint16

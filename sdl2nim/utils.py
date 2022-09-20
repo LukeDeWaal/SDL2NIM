@@ -73,9 +73,9 @@ def type_name(a_type, use_prefix=True, prefix=''):
         return 'asn1byte'
     elif a_type.kind.startswith('Integer'):
         if float(a_type.Min) >= 0:
-            return 'Asn1UInt'
+            return 'asn1SccUint'
         else:
-            return 'Asn1Int'
+            return 'asn1SccSint'
     elif a_type.kind == 'RealType':
         return 'asn1Real'
     elif a_type.kind.endswith('StringType'):
@@ -127,20 +127,19 @@ def array_content(prim, values, asnty, expression: callable):
         elif isinstance(prim, ogAST.PrimOctetStringLiteral):
             length = len(prim.hexstring)
         # Reference type can vary -> there is a Length field
-        rlen = f", Length => {length}"
+        rlen = f", nCount: {length}"
     else:
         rlen = ""
-    if isinstance(prim, ogAST.PrimStringLiteral):
-        df = '0'
-    else:
-        # Find a default value for the "others" field in case of SEQOF --> Not necessary in Nim
-        _, df, _ = expression(prim.value[0], readonly=1)
-        if isinstance(prim.value[0], (ogAST.PrimSequenceOf,
-                                      ogAST.PrimStringLiteral)):
-            df = array_content(prim.value[0], df, asnty.type, expression)
+
     split_vals = values.split(', ')
     first_val = split_vals[0]
-    first_val = f"{first_val}.{type_name(asnty.type)}"
+    if isinstance(prim, ogAST.PrimStringLiteral):
+        first_val = f"{first_val}.byte"
+    else:
+        try:
+            first_val = f"{first_val}.{type_name(asnty.type)}"
+        except AttributeError:
+            pass
     split_vals[0] = first_val
     return f"[{', '.join(split_vals)}]" # TODO
 

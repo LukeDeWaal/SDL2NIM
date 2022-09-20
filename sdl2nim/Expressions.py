@@ -3,6 +3,8 @@ import inspect
 import re
 
 import logging
+import sys
+
 import opengeode
 
 from functools import singledispatch
@@ -74,14 +76,14 @@ def expression(expr):
 
 @expression.register(ogAST.PrimVariable)
 def _primary_variable(prim, **kwargs):
-    exists = var_exists(prim.value[0], settings.VARIABLES)
+    exists = var_exists(prim.value[0].lower(), settings.VARIABLES)
     if (not exists) or is_local(prim.value[0], settings.LOCAL_VAR):  # Local Variable Access
         sep = ''
     else:  # Global Variable Access
         sep = settings.LPREFIX + '.'
 
     # No special action required yet
-    nim_string = f'{sep}{prim.value[0]}'
+    nim_string = f'{sep}{prim.value[0].lower()}'
 
     return [], str(nim_string), []
 
@@ -154,7 +156,7 @@ def _prim_call(prim, **kwargs):
         base_type = find_basic_type(params[0].exprType)
         expn_type = find_basic_type(params[1].exprType)
 
-        if expn_type.kind.beginswith('Integer') and expn_type.Min >= 0:
+        if expn_type.kind.startswith('Integer') and float(expn_type.Min) >= 0:
             # use ^ operator (need positive integer exponent)
             nim_string += f'(({operands[0]}) ^ ({operands[1]}))'
         else:
@@ -171,19 +173,30 @@ def _prim_call(prim, **kwargs):
             LOG.error(error)
             raise TypeError(error)
         param_stmts, param_str, local_var = expression(exp, readonly=1)
+
         stmts.extend(param_stmts)
         local_decl.extend(local_var)
         if min_length == max_length and not isinstance(exp, ogAST.PrimSubstring):
-            nim_string += min_length
+            nim_string += min_length  # f"len({param_str}.arr)"
         else:
-            # TODO
-            if isinstance(exp, ogAST.PrimSubstring):
-                range_str = f"len({param_str})"
-            else:
-                range_str = f"len({param_str})"
-            nim_string += range_str
+            nim_string += f"({param_str}).nCount"
 
-    elif func in ('observer_status', 'num', 'val', 'to_selector',
+    elif func == 'num':
+        exp = params[0]
+
+        basic_type = find_basic_type(exp.exprType)
+        if not basic_type.kind == 'EnumeratedType':
+            error = f'{exp.inputString} is not an ENUM'
+            LOG.error(error)
+            raise TypeError(error)
+
+        param_stmts, param_str, local_var = expression(exp, readonly=1)
+        stmts.extend(param_stmts)
+        local_decl.extend(local_var)
+
+        nim_string += f"ord({param_str})"
+
+    elif func in ('observer_status', 'val', 'to_selector',
                   'to_enum', 'exist', 'choice_to_int', 'present',):
         # TODO
         pass
@@ -284,7 +297,7 @@ def _prim_selector(prim, **kwargs):
                 and not kwargs.get("readonly", 0):
             # Must set Exist only when assigning value, not each time it is
             # accessed: this is what "readonly" ensures.
-            stmts.append(f'{nim_string}.exist.{field_name} = 1;')
+            stmts.append(f'{nim_string}.exist.{field_name} = 1')
         nim_string += '.' + field_name
 
     return stmts, str(nim_string), local_decl
@@ -374,6 +387,11 @@ def _equality(expr, **kwargs):
     lbty = find_basic_type(expr.left.exprType)
     rbty = find_basic_type(expr.right.exprType)
 
+    if expr.operand == '=':
+        operand = '=='
+    else:
+        operand = expr.operand
+
     basic = lbty.kind in ('IntegerType',
                           'Integer32Type',
                           'IntegerU8Type',
@@ -392,9 +410,12 @@ def _equality(expr, **kwargs):
             right_str = f'({right_str}).{type_name(lbty)}'
         elif rbty.kind == 'IntegerType' and lbty.kind != rbty.kind:
             left_str = f'({left_str}).{type_name(rbty)}'
-        nim_string = f'({left_str} {expr.operand} {right_str})'
+        nim_string = f'({left_str} {operand} {right_str})'
     else:
-        pass  # TODO
+        if lbty.kind.startswith('Real') or rbty.kind.startswith('Real'):
+            nim_string = f'abs({left_str} - {right_str}) < 1e-5'
+        else:
+            print(f"Cannot Compare Types: {lbty.kind} and {rbty.kind}", file=sys.stderr) # TODO
     return code, str(nim_string), local_decl
 
 
@@ -418,16 +439,16 @@ def _assign_expression(expr, **kwargs):
             if not isinstance(expr.left, ogAST.PrimSubstring):
                 # only if left is not a substring, otherwise syntax
                 # would be wrong due to result of _prim_substring
-                strings.append(f"{left_str}.Data(1..{right_str}'Length) := {right_str};")
+                strings.append(f"{left_str}.Data(1..{right_str}'Length) := {right_str}")
             else:
                 # left is substring: no length, direct assignment
                 rlen = ""
-                strings.append(f"{left_str} = {right_str};")
+                strings.append(f"{left_str} = {right_str}")
 
         elif isinstance(expr.right, ogAST.ExprAppend):
             basic_right = find_basic_type(expr.right.exprType)
             rlen = append_size(expr.right)
-            strings.append("{lvar}[0 ..< {lstr}] = {rvar};"
+            strings.append("{lvar}[0 ..< {lstr}] = {rvar}"
                            .format(lvar=left_str,
                                    rvar=right_str,
                                    lstr=rlen))
@@ -436,19 +457,19 @@ def _assign_expression(expr, **kwargs):
                                      ogAST.PrimStringLiteral)):
             if not isinstance(expr.left, ogAST.PrimSubstring):
                 strings.extend([
-                    f"{left_str}.nCount = len({array_content(expr.right, right_str, basic_left)}).cint",
-                    f"{left_str}.arr[0 ..< {left_str}.nCount] = @{array_content(expr.right, right_str, basic_left)};"])
+                    f"{left_str}.nCount = ({len(expr.right.value)}).cint",
+                    f"{left_str}.arr[0 ..< {left_str}.nCount] = @{array_content(expr.right, right_str, basic_left)}"])
             else:
                 # left is substring: no length, direct assignment
-                strings.append(f"{left_str} = ({right_str});")
+                strings.append(f"{left_str} = ({right_str})")
 
             rlen = None
         else:
             # Right part is a variable
-            strings.append(f"{left_str} := {right_str};")
+            strings.append(f"{left_str} := {right_str}")
             rlen = None
         if rlen and basic_left.Min != basic_left.Max:
-            strings.append(f"{left_str}.Length := {rlen};")
+            strings.append(f"{left_str}.Length := {rlen}")
 
     elif basic_left.kind.startswith('Integer') and isinstance(expr.right,
                                                               (ogAST.PrimOctetStringLiteral,
@@ -456,7 +477,7 @@ def _assign_expression(expr, **kwargs):
         # If right is an octet string or bit string literal, use the numerical
         # value directly.
         right_str = str(expr.right.numeric_value)
-        strings.append(f"{left_str} = {right_str};")
+        strings.append(f"{left_str} = {right_str}")
 
     elif basic_left.kind.startswith('Integer'):
         # Integers should be compatible by default (opengeode parser checks this).
@@ -535,8 +556,8 @@ def _bitwise_operators(expr, **kwargs):
                                ogAST.PrimStringLiteral)):
                     right_str = array_content(expr.right, right_str, basic_type)
 
-                local_decl.append(f'{tmp_string} : constant {type_name(expr.right.exprType)} := {right_str};')
-                # code.append(f'{tmp_string} := {right_str};')
+                local_decl.append(f'{tmp_string} : constant {type_name(expr.right.exprType)} := {right_str}')
+                # code.append(f'{tmp_string} := {right_str}')
 
                 right_str = tmp_string
                 right_payload = right_str + '.Data'
@@ -626,7 +647,7 @@ def _expr_in(expr, **kwargs):
         local_decl.append(f'tmp{expr.tmpVar} : constant array[ {size} , {sort} ] = ({left_str})')
         nim_string = f'(for loopvar{expr.tmpVar} of tmp{expr.tmpVar} => var = {right_str})'
     else:
-        local_decl.append(f'tmp{expr.tmpVar} : bool = false;')
+        local_decl.append(f'tmp{expr.tmpVar} : bool = false')
         nim_string = f'tmp{expr.tmpVar}'
 
         # stmts.append(f"in_loop_{nim_string}:")
@@ -727,7 +748,10 @@ def _string_literal(primary, **kwargs):
 @expression.register(ogAST.PrimConstant)
 def _constant(primary, **kwargs):
     ''' Generate code for a reference to an ASN.1 constant '''
-    return [], str(primary.constant_c_name), []
+    if primary.constant_c_name == 'pi':
+        return [], str(primary.constant_c_name), [f'const {primary.constant_c_name} = {primary.constant_value}']
+    else:
+        return [], str(primary.constant_c_name), []
 
 
 @expression.register(ogAST.PrimMantissaBaseExp)
@@ -754,7 +778,7 @@ def _conditional(cond, **kwargs):
         elif lens[1] < lens[0]:
             else_str = else_str[0:-1] + ' ' * (lens[0] - lens[1]) + '"'
 
-    local_decl = [f'tmp{cond.value["tmpVar"]} : {tmp_type};']
+    local_decl = [f'tmp{cond.value["tmpVar"]} : {tmp_type}']
     if_stmts, if_str, if_local = expression(cond.value['if'], readonly=1)
     stmts.extend(if_stmts)
     local_decl.extend(if_local)
@@ -790,10 +814,10 @@ def _conditional(cond, **kwargs):
         if basic_then.Min != basic_then.Max:
             then_len = f"len({then_str})"
     else:
-        stmts.append('tmp{idx} = {then_str};'
+        stmts.append('tmp{idx} = {then_str}'
                      .format(idx=cond.value['tmpVar'], then_str=then_str))
     # if then_len:
-    #     stmts.append("tmp{idx} = {then_len};"
+    #     stmts.append("tmp{idx} = {then_len}"
     #                  .format(idx=cond.value['tmpVar'], then_len=then_len))
 
     stmts.append('else:')
@@ -804,22 +828,22 @@ def _conditional(cond, **kwargs):
 
     if isinstance(cond.value['else'], ogAST.ExprAppend):
         else_len = append_size(cond.value['else'])
-        stmts.append("tmp{idx} = {else_str};"
+        stmts.append("tmp{idx} = {else_str}"
                      .format(idx=cond.value['tmpVar'],
                              else_str=else_str))
     elif isinstance(cond.value['else'], ogAST.PrimSubstring):
-        stmts.append("tmp{idx} = {else_str};"
+        stmts.append("tmp{idx} = {else_str}"
                      .format(idx=cond.value['tmpVar'], else_str=else_str))
         if basic_else.Min != basic_else.Max:
             else_len = "len({})".format(else_str)
     else:
-        stmts.append('tmp{idx} = {else_str};'.format(
+        stmts.append('tmp{idx} = {else_str}'.format(
             idx=cond.value['tmpVar'],
             else_str=else_str))
     # if else_len:
-    #     stmts.append("tmp{idx}.Length := {else_len};"
+    #     stmts.append("tmp{idx}.Length := {else_len}"
     #                  .format(idx=cond.value['tmpVar'], else_len=else_len))
-    # stmts.append('end if;')
+    # stmts.append('end if')
     nim_string = 'tmp{idx}'.format(idx=cond.value['tmpVar'])
     return stmts, str(nim_string), local_decl
 
@@ -924,7 +948,7 @@ def _sequence_of(seqof, **kwargs):
             # not work well with some operators (e.g. Append)
             tmpVarName = f'tmp{seqof.value[i].tmpVar}'
             tmpVarSort = seqof.value[i].exprType
-            local_decl.append(f'{tmpVarName} : {type_name(tmpVarSort)};')
+            local_decl.append(f'{tmpVarName} : {type_name(tmpVarSort)}')
             # To get a proper assignment we need to create an ExprAssign
             expr = ogAST.ExprAssign()
             expr.left = ogAST.PrimVariable()
@@ -970,7 +994,12 @@ def _choiceitem(choice, **kwargs):
         if curr_choice == search:
             prefix = basic.Children[each].EnumID
             break
-    nim_string = f'(Kind => {prefix}, {choice.value["choice"]} => {choice_str})' # TODO
+    nim_string = f'{type_name(choice.exprType)}(kind: {type_name(choice.exprType)}_selection.{prefix})' #, u: {choice_str})'
+
+    # Unsure if field is always called u
+    # Union is anonymous in C, we dont know the typename in Nim
+    # Hacky way to not have to initialize object specifically by adding statement after context init
+    stmts.append(f"{settings.LPREFIX}.%s.u.{choice.value['choice']} = {choice_str}")
     return stmts, str(nim_string), local_decl
 
 
