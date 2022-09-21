@@ -1,6 +1,8 @@
 import inspect
 import os, sys
+import shutil
 
+from sdl2nim import settings
 from opengeode import ogAST, ogParser
 from opengeode.Helper import find_basic_type as __find_basic_type
 
@@ -58,13 +60,13 @@ def is_local(var, local_var):
     return var in (loc for loc in local_var.keys())
 
 
-def type_name(a_type, use_prefix=True, prefix=''):
+def type_name(a_type, use_prefix=True, prefix=settings.ASN1SCC):
     ''' Check the type kind and return a Nim usable type name '''
     if a_type.kind == 'ReferenceType':
-        # if use_prefix:
-        #     return prefix + a_type.ReferencedTypeName
-        # else:
-        return a_type.ReferencedTypeName
+        if use_prefix:
+            return prefix + a_type.ReferencedTypeName
+        else:
+            return a_type.ReferencedTypeName
     elif a_type.kind == 'BooleanType':
         return 'bool'
     elif a_type.kind.startswith('Integer32'):
@@ -230,20 +232,23 @@ def generate_nim_definitions(procname: str, path: str):
         path = os.path.dirname(path)
     os.system(f'cp {path}/*.asn .')
 
-    for file in os.listdir():
+    files = list(os.listdir())
+    for file in files:
         if '-' in file:
             os.rename(file, file.replace('-', '_'))
 
     asn_files = [os.path.splitext(file)[0] for file in os.listdir() if os.path.splitext(file)[1] == '.asn']
     header_files_str = " ".join([file.split('.')[0] + '.h' for file in asn_files])
 
+
     module_folder = os.path.dirname(inspect.getfile(generate_nim_definitions))
     commands = [
-        f'asn1scc -o . -equal -c *.asn',
+        f'asn1scc --rename-policy 3 -typePrefix {settings.ASN1SCC} -o . -equal -c *.asn',
         f'cp {module_folder}/asn1crt.nim .',
         f'c2nim --importc {header_files_str}',
         'gcc -c *.c',
     ]
+
     os.system(' && '.join(commands))
 
     return

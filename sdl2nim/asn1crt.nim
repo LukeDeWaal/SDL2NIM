@@ -50,6 +50,9 @@ type
     asn1Real32* = cfloat
     asn1Real64* = cdouble
     asn1bool* = bool
+    asn1byte* = byte
+    asn1SccSint8* = int8
+    asn1SccUint8* = uint8
     asn1SccSint16* = int16
     asn1SccUint16* = uint16
     asn1SccSint32* = int32

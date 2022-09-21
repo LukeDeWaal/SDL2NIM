@@ -170,6 +170,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     if not stop_condition:
         Helper.generate_asn1_datamodel(process)
+        generate_nim_definitions(process.name, process.filename)  # TODO
 
     for (var_name, content) in process.variables.items():
         # filter out the aliases and put them in the local variable pool
@@ -202,7 +203,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         sortname = sortname.replace("-", "_")
         if sortdef.type.kind == "EnumeratedType":
             # choiceTypeModule = process.mapping_sort_module[sortdef.ChoiceTypeName].replace('-', '_')
-            fromMod = f'{sortname}'
+            fromMod = f'{settings.ASN1SCC}{sortname}'
             toMod = f'{process.name}_Datamodel.{settings.ASN1SCC}{process.name}_{sortname}'
             choice_selections_decl.extend([
                 f"proc To_{sortname} (Src : {fromMod}): {settings.ASN1SCC}Sint32 ",
@@ -219,7 +220,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # but not in stop condition code, since we reuse the context type
         # of the state machine being observed
 
-        ctxt = (f'var {settings.LPREFIX}* : {process.name.capitalize()}_Context = {process.name.capitalize()}_Context('
+        ctxt = (f'var {settings.LPREFIX}* : {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_Context = {settings.ASN1SCC}{process.name.capitalize()}_Context('
                 'init_done: false, ')
         initial_values = []
         post_actions = []
@@ -234,8 +235,9 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 # require temporary variable to store computed result
                 dst, dstr, dlocal = expression(def_value)
                 varbty = find_basic_type(var_type)
+                variable_type = type_name(var_type)
 
-                if varbty.kind.startswith('asn1SccSint') and \
+                if varbty.kind.startswith(f'{settings.ASN1SCC}Sint') and \
                         isinstance(def_value, (ogAST.PrimOctetStringLiteral,
                                                ogAST.PrimBitStringLiteral)):
                     dstr = str(def_value.numeric_value)
@@ -249,7 +251,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                     else:
                         S = len(def_value.value)
                     context_decl.extend([
-                        f"var tmp_{var_name}_{local_tmpvar_count}: {var_type.ReferencedTypeName}",
+                        f"var tmp_{var_name}_{local_tmpvar_count}: {variable_type}",
                         f"tmp_{var_name}_{local_tmpvar_count}.arr[0 ..< {S}] = @{dstr}"
                     ])
                     if varbty.Min != varbty.Max:
@@ -259,6 +261,9 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
                 elif varbty.kind == 'IA5StringType':
                     dstr = ia5string_raw(def_value)
+
+                elif varbty.kind == 'EnumeratedType':
+                    dstr = f'{variable_type.replace("-", "_")}_{dstr}'
 
                 if dst:  # Hacky way to initialize anonymous Choice types
                     if "%" in dst[0]:
@@ -633,7 +638,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             if state.endswith('START'):
                 return
             # taste_template.append(f'when {settings.ASN1SCC}{state} =>')
-            statecase = [f'of {state}:']
+            statecase = [f'of {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{settings.ASN1SCC}{state}:']
             input_def = process.input_mapping[signame].get(state)
             if state in process.aggregates.keys():
                 taste_template.extend(statecase)
@@ -723,14 +728,14 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             typename = type_name(param['type'])
             name = param['name']
             if param['direction'] == 'in':
-                in_params.append(f'{name} : {typename}')
+                in_params.append(f'{name} : ptr {typename}')
             else:
                 out_params.append(f'{typename}')
 
         if in_params:
-            params_spec = f' ({", ".join(in_params)})'
+            params_spec += f' ({", ".join(in_params)})'
         else:
-            params_spec = '()'
+            params_spec += '()'
 
         if out_params:
             params_spec += ':' + f' ({", ".join(out_params)})'
@@ -745,8 +750,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 # processes.
                 nim_decl_template.append(f'###  Synchronous Required Interface "{sig}"')
                 nim_decl_template.append(f'const {procname}* = {process.name}_RI.{sig}')
-            ri_stub_decl.append(f'proc {sig}*{params_spec}')
-            ri_stub_src.extend([f'proc {sig}*{params_spec} =', 'pass'])
+            # ri_stub_decl.append(f'proc {sig}*{params_spec}')
+            ri_stub_src.extend(['{.compile: "%s_RI.c" }' % process.name, f'proc {sig}*{params_spec} ' + '{.importc: "%s_RI_%s".}' % (process.name, sig)])
 
     # for the .ads file, generate the declaration of timers set/reset functions
     for timer in process.timers:
@@ -1046,8 +1051,6 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         process_instance.cs_mapping = process.cs_mapping
         generate(process_instance, simu, instance=True, taste=taste)
 
-    generate_nim_definitions(process.name, process.filename)  # TODO
-
     os.chdir(cwd)
 
 
@@ -1198,7 +1201,7 @@ def _call_external_function(output, **kwargs) -> str:
                     list_of_params.append(p_id)
             name = out["outputName"]
             if list_of_params:
-                params = ', '.join(list_of_params)
+                params = 'addr ' + ', addr '.join(list_of_params)
                 code.append(f'RI{settings.SEPARATOR}{name}({params})')
 
             else:
@@ -1391,22 +1394,22 @@ def _transition(tr, **kwargs):
                     # still the old state, there is a risk of infinite recursion)
                     if not tr.terminator.substate:
                         code.append(
-                            f'{settings.LPREFIX}.state = {settings.ASN1SCC}{tr.terminator.inputString}')
+                            f'{settings.LPREFIX}.state = {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{settings.ASN1SCC}{tr.terminator.inputString.lower()}')
                     else:
                         # We may be already in a substate
                         code.append(f'{settings.LPREFIX}.{tr.terminator.substate}{settings.SEPARATOR}state ='
-                                    f' {settings.ASN1SCC}{tr.terminator.inputString}')
+                                    f' {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{settings.ASN1SCC}{tr.terminator.inputString.lower()}')
                     # Call the START function of the state aggregation
                     code.append(f'{tr.terminator.next_id}')
                     code.append('trId = -1')
                 elif not history:
                     code.append(f'trId = {str(tr.terminator.next_id)}')
                     if tr.terminator.next_id == -1:
-                        if not tr.terminator.substate:  # XXX add to C generator
-                            code.append(f'{settings.LPREFIX}.state = {tr.terminator.inputString.lower()}')#{settings.ASN1SCC}{tr.terminator.inputString};')
+                        if not tr.terminator.substate:  # XXX add to C generator asn1SccOperators_States_asn1Sccwait
+                            code.append(f'{settings.LPREFIX}.state = {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{settings.ASN1SCC}{tr.terminator.inputString.lower()}')
                         else:
                             code.append(f'{settings.LPREFIX}.{tr.terminator.substate}{settings.SEPARATOR}state ='
-                                        f' {settings.ASN1SCC}{tr.terminator.inputString.lower()}')
+                                        f' {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{settings.ASN1SCC}{tr.terminator.inputString.lower()}')
                 else:
                     # "nextstate -": switch case to re-run the entry transition
                     # in case of a composite state or state aggregation

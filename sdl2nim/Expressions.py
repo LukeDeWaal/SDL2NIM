@@ -987,12 +987,12 @@ def _choiceitem(choice, **kwargs):
     # (normally field_PRESENT, but can be prefixed by the type name if there
     # is a namespace conflict)
     basic = find_basic_type(choice.exprType)
-    prefix = 'CHOICE_NOT_FOUND'
+    prefix = 'Choice_NONE'
     search = choice.value['choice'].lower().replace('-', '_')
     for each in basic.Children:
         curr_choice = each.lower().replace('-', '_')
         if curr_choice == search:
-            prefix = basic.Children[each].EnumID
+            prefix = f"{type_name(choice.exprType)}_{basic.Children[each].EnumID}"
             break
     nim_string = f'{type_name(choice.exprType)}(kind: {type_name(choice.exprType)}_selection.{prefix})' #, u: {choice_str})'
 
