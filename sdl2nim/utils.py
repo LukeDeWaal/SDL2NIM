@@ -245,17 +245,47 @@ def generate_nim_definitions(procname: str, path: str):
     asn_files = [os.path.splitext(file)[0] for file in os.listdir() if os.path.splitext(file)[1] == '.asn']
     header_files_str = " ".join([file.split('.')[0] + '.h' for file in asn_files])
 
-    module_folder = os.path.dirname(inspect.getfile(generate_nim_definitions))
-    commands = [
-        f'asn1scc --rename-policy 3 -typePrefix {settings.ASN1SCC} -o . -equal -c *.asn',
-        f'cp {module_folder}/asn1crt.nim .',
-        f'c2nim --importc {header_files_str}'
-    ]
+    import importlib.resources
+    asn1crt = importlib.resources.path('sdl2nim', 'asn1crt.nim')
+    with asn1crt as path:
+        asn1crt_path = str(path.absolute())
 
-    os.system(' && '.join(commands))
+    libdir = "~/.choosenim/toolchains/nim-*/lib/" # TODO: Specify specific nim version to use
+
+    filestr = \
+f"""
+#
+# NimScript build file for {procname}
+#
+
+# TODO: Add Release / Debug / Optimization Switches
+
+#
+# Tasks
+#
+task asn, "Generate ASN Files":
+    exec "asn1scc --rename-policy 3 -typePrefix {settings.ASN1SCC} -o . -equal -c *.asn"
+  
+task filegen, "Generate Nim Files":
+    asnTask()
+    exec "cp {asn1crt_path} . && c2nim --importc {header_files_str}" 
+
+task build, "Build Project":
+    filegenTask()
+    exec "nim -c --nolinking:on --nimcache:. c {procname}.nim"
+    exec "gcc -o {procname}_demo *.c -I {libdir}" 
+
+task clean, "Clean Project Folder":
+    exec "rm -rf *.nim && rm -rf *.asn"
+    exec "find . ! -name '{procname}_RI.c' -delete"
+"""
+
+    with open('config.nims', 'w+') as buildfile:
+        buildfile.write(filestr)
+
+    # os.system(' && '.join(commands))
 
     return
-
 
 
 def format_nim_code(stmts):

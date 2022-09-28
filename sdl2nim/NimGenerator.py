@@ -170,7 +170,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     if not stop_condition:
         Helper.generate_asn1_datamodel(process)
-        generate_nim_definitions(process.name, process.filename)  # TODO
+
 
     for (var_name, content) in process.variables.items():
         # filter out the aliases and put them in the local variable pool
@@ -1050,6 +1050,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # determine if Check_Queue is needed
         process_instance.cs_mapping = process.cs_mapping
         generate(process_instance, simu, instance=True, taste=taste)
+
+    generate_nim_definitions(process.name, process.filename)
 
     os.chdir(cwd)
 
