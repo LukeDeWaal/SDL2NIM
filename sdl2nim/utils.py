@@ -235,20 +235,29 @@ def procedure_header(proc, SEPARATOR):
 def generate_nim_definitions(procname: str, path: str):
     if not os.path.isdir(path):
         path = os.path.dirname(path)
-    os.system(f'cp {path}/*.asn .')
+    # os.system(f'cp {path}/*.asn .')
 
-    files = list(os.listdir())
-    for file in files:
-        if '-' in file:
-            os.rename(file, file.replace('-', '_'))
+    # files = list(os.listdir())
+    # for file in files:
+    #     if '-' in file:
+    #         os.rename(file, file.replace('-', '_'))
 
     asn_files = [os.path.splitext(file)[0] for file in os.listdir() if os.path.splitext(file)[1] == '.asn']
-    header_files_str = " ".join([file.split('.')[0] + '.h' for file in asn_files])
 
     import importlib.resources
     asn1crt = importlib.resources.path('sdl2nim', 'asn1crt.nim')
-    with asn1crt as path:
-        asn1crt_path = str(path.absolute())
+    with asn1crt as filepath:
+        asn1crt_path = str(filepath.absolute())
+
+    excluded_from_clean = [
+        'config.nims',
+        f'{procname}_RI.c',
+        f'{procname}_RI.nim',
+        f'{procname}.nim',
+        f'{procname}_datamodel.asn'
+    ]
+
+    excluded_from_clean = "! -name \'" + "\' ! -name \'".join(excluded_from_clean) + "'"
 
     libdir = "~/.choosenim/toolchains/nim-*/lib/" # TODO: Specify specific nim version to use
 
@@ -264,20 +273,32 @@ f"""
 # Tasks
 #
 task asn, "Generate ASN Files":
+    exec "cp {path}/*.asn ."
+    exec "find . -name '*asn' -exec bash -c ' mv $0 ${{0/-/_}}' {{}} \\\;"
     exec "asn1scc --rename-policy 3 -typePrefix {settings.ASN1SCC} -o . -equal -c *.asn"
   
 task filegen, "Generate Nim Files":
     asnTask()
-    exec "cp {asn1crt_path} . && c2nim --importc {header_files_str}" 
+    exec "cp {asn1crt_path} ."
+    exec "c2nim --importc $(find . -name '*h' -not -name 'asn1crt*')" 
 
 task build, "Build Project":
     filegenTask()
-    exec "nim -c --nolinking:on --nimcache:. c {procname}.nim"
-    exec "gcc -o {procname}_demo *.c -I {libdir}" 
+    exec "nim c expressions.nim"
+    #exec "nim -c --nolinking:on --nimcache:. c {procname}.nim"
+    #exec "gcc -o {procname}_demo *.c -I {libdir}" 
 
 task clean, "Clean Project Folder":
-    exec "rm -rf *.nim && rm -rf *.asn"
+    exec "find . {excluded_from_clean} -delete"
+
+task deepclean, "Delete All except the RI file":
+    cleanTask()
     exec "find . ! -name '{procname}_RI.c' -delete"
+
+task rebuild, "Clean & Build":
+    cleanTask()
+    buildTask()
+
 """
 
     with open('config.nims', 'w+') as buildfile:

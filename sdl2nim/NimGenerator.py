@@ -392,7 +392,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     taste_template = []
     template_str = '' \
-                   "\n\n\n### ------ IMPLEMENTATION ------ ###\n\n\n"
+                   "\n\n\n### ------ IMPLEMENTATION ------ ###\n\n\n{.compile: \"dataview_uniq.c\"}\n\n"
 
     taste_template.append(template_str)
 
