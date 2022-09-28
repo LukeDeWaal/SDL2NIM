@@ -237,10 +237,11 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 varbty = find_basic_type(var_type)
                 variable_type = type_name(var_type)
 
-                if varbty.kind.startswith(f'{settings.ASN1SCC}Sint') and \
+                if (varbty.kind.startswith('Integer') or varbty.kind.startswith(f'{settings.ASN1SCC}Sint')) and \
                         isinstance(def_value, (ogAST.PrimOctetStringLiteral,
                                                ogAST.PrimBitStringLiteral)):
                     dstr = str(def_value.numeric_value)
+
 
                 elif varbty.kind in ('SequenceOfType',
                                      'OctetStringType',
@@ -957,8 +958,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 need_final_endif = False
                 first = "el" if done else ""
                 taste_template.append(
-                    f'{first}if {settings.LPREFIX}.state = {settings.ASN1SCC}{statename}'
-                    ' then')
+                    f'{first}if {settings.LPREFIX}.state == {settings.ASN1SCC}{statename}:')
             # Change priority 0 (no priority set) to lowest priority
             if cs_item:
                 lowest_priority = max(item.priority for item in cs_item)
@@ -1168,11 +1168,20 @@ def _call_external_function(output, **kwargs) -> str:
                                   (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
                         if basic_param.kind == 'IA5StringType':
                             p_id = ia5string_raw(param)
+                            code.extend([
+                                f"{tmp_id}[0 ..< {len(p_id.split(','))}] = {p_id}",
+                                f"for {tmp_id}_idx in {len(p_id.split(','))} ..< len({tmp_id}):",
+                                rf"{tmp_id}[{tmp_id}_idx] = ('\0').char",
+                                f"# end loop"
+                            ])
+
                         elif basic_param.kind.startswith('asn1SccSint'):
                             p_id = str(param.numeric_value)
                         else:
-                            tmpstr  = [f"{tmp_id}.nCount = ({len(p_id.split(','))}).cint",
-                            f"{tmp_id}.arr[0 ..< {len(p_id.split(','))}] = @{array_content(param, p_id, basic_param)}"]
+                            tmpstr  = [
+                                f"{tmp_id}.nCount = ({len(p_id.split(','))}).cint",
+                                f"{tmp_id}.arr[0 ..< {len(p_id.split(','))}] = @{array_content(param, p_id, basic_param)}"
+                            ]
                             p_id = tmpstr
                             code.extend(tmpstr)
 
@@ -1191,7 +1200,7 @@ def _call_external_function(output, **kwargs) -> str:
                             # code.append(f'{tmp_id}.len = {app_len};')
                             pass
                     elif isinstance(param, (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)) \
-                            and basic_param.kind != 'IA5StringType' and not basic_param.kind.startswith('asn1SccSint'):
+                            and not basic_param.kind.startswith('asn1SccSint'):
                         pass # Already appended code
                     else:
                         code.append(f'{tmp_id} = {p_id}')
@@ -1352,8 +1361,222 @@ def _task_forloop(task, **kwargs):
 
 
 @generate.register(ogAST.Decision)
-def _decision(dec, branch_to=None, sep='if ', last='end if', exitcalls=[], **kwargs):
-    not_implemented_error()
+def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **kwargs):
+    ''' Generate the code for a decision
+            A decision is made of a question and some answers ; each answer may
+            be followed by a transition (ogAST.Transition). The code of the
+            transition is by default generated, but it is possible to generate only
+            the code of the question and reference a transition Id (trId) if
+            the reference number is passed to the branch_to parameter. In addition
+            it is possible to pass a list of exit calls: this is for nested
+            functions when they are exited with a continuous signal at a level
+            above, a chain a calls to exit procedures has to be added.
+            This option is used for example when generating the code of
+            continuous signal: the code is generated in the <<Continuous_Signals>>
+            part, while the code of the transition already exists in the
+            part above. The need is only to set the id of the next transition.
+            XXX has to be done also in the C backend
+        '''
+    code, local_decl = [], []
+    basic = True
+
+    if dec.kind == 'any':
+        # LOG.warning('Ada backend does not support the "ANY" statement')
+        code.extend(traceability(dec))
+        # code.append('null;')
+        # return code, local_decl
+        nb = len(dec.answers)
+        code.append(f'case Rand_{nb}_Pkg.Random (Gen_{nb}) is')
+    elif dec.kind == 'informal_text':
+        LOG.warning('Informal decision ignored')
+        code.append(f'-- Informal decision was ignored: {dec.inputString}')
+        code.append('pass')
+        return code, local_decl
+    else:
+        question_type = dec.question.exprType
+        actual_type = type_name(question_type)
+        question_basic = find_basic_type(question_type).kind
+        basic = question_basic in (
+            'IntegerType',
+            'Integer32Type',
+            'IntegerU8Type',
+            'BooleanType',
+            'RealType',
+            'EnumeratedType',
+            'ChoiceEnumeratedType')
+        # for ASN.1 types, declare a local variable
+        # to hold the evaluation of the question
+        if not basic:
+            local_decl.append(f'var tmp{dec.tmpVar} : {actual_type}')
+
+        q_stmts, q_str, q_decl = expression(dec.question, readonly=1)
+
+        # Add code-to-model traceability
+        code.extend(traceability(dec))
+        local_decl.extend(q_decl)
+        code.extend(q_stmts)
+
+        if not basic:
+            code.append(f'tmp{dec.tmpVar} = {q_str}')
+
+    previous_ans = ''
+    for idx, a in enumerate(dec.answers):
+        code.extend(traceability(a))
+        if dec.kind == 'any':
+            code.append(f'when {idx + 1} =>');
+            if not branch_to:
+                if a.transition:
+                    stmt, tr_decl = generate(a.transition)
+                else:
+                    stmt, tr_decl = ['pass'], []
+                code.extend(stmt)
+                local_decl.extend(tr_decl)
+            else:
+                # Before branching we should optionally execute the exit
+                # procedures of the nested states we may be leaving
+                for exit in exitcalls:
+                    code.append(exit);
+                code.append(f'trId := {branch_to};')
+            continue
+        if dec.kind == 'informal_text':
+            break
+
+        sub_sep = ''
+        exp = ''
+        for element in a.answers:
+            # each branch can trigger based on multiple coma-separated answers
+            ans_kind = element['kind']
+            ans_content = element['content']
+            qbty = find_basic_type(question_type)
+
+            if ans_kind in ('open_range', 'constant'):
+                op, constant = ans_content  # get the constant
+                if op.operand == '=':
+                    operand = '=='
+                else:
+                    operand = '!='
+
+                cbty = find_basic_type(constant.exprType)
+                ans_stmts, ans_str, ans_decl = expression(constant, readonly=1)
+                code.extend(ans_stmts)
+                local_decl.extend(ans_decl)
+                if not basic:
+                    if op in (ogAST.ExprEq, ogAST.ExprNeq):
+                        if isinstance(constant, (ogAST.PrimSequenceOf,
+                                                 ogAST.PrimStringLiteral)):
+                            if qbty.kind == 'IA5StringType':
+                                ans_str = ia5string_raw(constant)
+                            else:
+                                ans_str = array_content(constant, ans_str, qbty)
+                        local_decl.extend([
+                            f"var tmp_{actual_type}_{dec.tmpVar}: {actual_type}"
+                        ])
+                        if int(cbty.Min) > 1 or int(cbty.Max) > 1:
+                            postfix = ''
+                            if isinstance(constant, ogAST.PrimStringLiteral):
+                                postfix = f'[0 ..< {constant.exprType.Min}]'
+                            elif constant.expr.is_raw:
+                                postfix = '.arr'
+                            code.extend([
+                                f"tmp_{actual_type}_{dec.tmpVar}{postfix} = {ans_str}"
+                            ])
+                            ans_str = f"tmp_{actual_type}_{dec.tmpVar}"
+
+                        if question_basic in ('IA5StringType', ):
+                            ptr = False
+                        else:
+                            ptr = True
+                        exp += f'{actual_type}_Equal({"addr"*ptr} tmp{dec.tmpVar}, {"addr"*ptr} {ans_str})'
+                        if op == ogAST.ExprNeq:
+                            exp = f'{sub_sep}not {exp}'
+                        else:
+                            exp = f'{sub_sep}{exp}'
+                    else:
+                        exp += f'{sub_sep}tmp{dec.tmpVar} {operand} {ans_str}'
+                else:
+                    # Basic (number/enumerated/boolean)
+                    # but the answer may be an hex or bit string literal
+                    if isinstance(constant, (ogAST.PrimBitStringLiteral,
+                                             ogAST.PrimOctetStringLiteral)):
+                        ans_str = str(constant.numeric_value)
+
+                    if actual_type != 'Boolean' and actual_type != 'bool':
+                        if question_basic.startswith('Integer'):
+                            # cast integers, useful e.g. for octet string elements
+                            exp += f'{sub_sep}({q_str}) {operand} {actual_type}({ans_str})'
+                        else:
+                            exp += f'{sub_sep}({q_str}) {operand} {ans_str}'
+                    elif ans_str == 'true' and previous_ans != 'false':
+                        exp += f'{sub_sep} bool({q_str})'
+                    elif ans_str == 'false' and previous_ans != 'true':
+                        exp += f'{sub_sep}not bool({q_str})'
+                    else:
+                        exp = 'ELSEONLY'
+                # In case of true/false, avoid repeating the expression
+                previous_ans = ans_str
+
+
+            elif ans_kind == 'closed_range':
+                cl0_stmts, cl0_str, cl0_decl = expression(ans_content[0],
+                                                          readonly=1)
+                cl1_stmts, cl1_str, cl1_decl = expression(ans_content[1],
+                                                          readonly=1)
+                code.extend(cl0_stmts)
+                local_decl.extend(cl0_decl)
+                code.extend(cl1_stmts)
+                local_decl.extend(cl1_decl)
+
+                exp += f'{sub_sep}({q_str} >= {cl0_str} and {q_str} <= {cl1_str})'
+
+            elif ans_kind == 'informal_text':
+                continue
+            elif ans_kind == 'else':
+                # Keep the ELSE statement for the end
+                if a.transition:
+                    else_code, else_decl = generate(a.transition)
+                else:
+                    else_code, else_decl = ['pass'], []
+                local_decl.extend(else_decl)
+
+            sub_sep = " or "
+        if exp:
+            if exp == 'ELSEONLY':
+                # Optimization for true/false answers
+                code.append('else:')
+            else:
+                code.append(sep + exp + ':')
+            if not branch_to:
+                if a.transition:
+                    stmt, tr_decl = generate(a.transition)
+                else:
+                    stmt, tr_decl = ['pass'], []
+                code.extend(stmt)
+                local_decl.extend(tr_decl)
+            else:
+                # Before branching we should optionally execute the exit
+                # procedures of the nested states we may be leaving
+                for exit in exitcalls:
+                    code.append(exit);
+                code.append(f'trId = {branch_to};')
+            sep = 'elif '
+    try:
+        if sep != 'if ':
+            # If there is at least one 'if' branch
+            else_code.insert(0, 'else:')
+            code.extend(else_code)
+        else:
+            code.extend(else_code)
+    except:
+        pass
+    if sep != 'if ' and last:
+        # If there is at least one 'if' branch
+        # "last" is usually "end if;" but it can be changed by parameter
+        # e.g. if the decision is chained with other tests with "elsif"
+        code.append(last)
+
+    if dec.kind == 'any':
+        code.append('# end case')
+    return code, local_decl
 
 
 @generate.register(ogAST.Label)
@@ -1490,7 +1713,7 @@ def _transition(tr, **kwargs):
                     code.append(f'trId =  {str(tr.terminator.next_id)}')
                     code.append('goto Continuous_Signals')
                 if aggregate:
-                    code.append('else')
+                    code.append('else:')
                     code.append('trId = -1')
                     code.append('goto Continuous_Signals')
                     code.append('# end if')
@@ -1619,7 +1842,7 @@ def _inner_procedure(proc, **kwargs):
         if proc.content.start and proc.content.start.transition:
             tr_code, tr_decl = generate(proc.content.start.transition)
         else:
-            tr_code, tr_decl = ['null  ###  Empty procedure'], []
+            tr_code, tr_decl = ['pass  ###  Empty procedure'], []
         # Generate code for the floating labels
         code_labels = []
         for label in proc.content.floating_labels:

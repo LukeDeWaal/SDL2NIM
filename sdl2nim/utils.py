@@ -64,9 +64,9 @@ def type_name(a_type, use_prefix=True, prefix=settings.ASN1SCC):
     ''' Check the type kind and return a Nim usable type name '''
     if a_type.kind == 'ReferenceType':
         if use_prefix:
-            return prefix + a_type.ReferencedTypeName
+            return (prefix + a_type.ReferencedTypeName).replace('-', '_')
         else:
-            return a_type.ReferencedTypeName
+            return (a_type.ReferencedTypeName).replace('-', '_')
     elif a_type.kind == 'BooleanType':
         return 'bool'
     elif a_type.kind.startswith('Integer32'):
@@ -81,7 +81,7 @@ def type_name(a_type, use_prefix=True, prefix=settings.ASN1SCC):
     elif a_type.kind == 'RealType':
         return 'asn1Real'
     elif a_type.kind.endswith('StringType'):
-        return 'string'
+        return 'cstring'
     elif a_type.kind == 'ChoiceEnumeratedType':
         return 'asn1SccUint32'
     elif a_type.kind == 'StateEnumeratedType':
@@ -108,7 +108,10 @@ def string_payload(prim, nim_string, TYPES):
         else:
             payload = ''
     elif prim_basic.kind == 'SequenceOfType':
-        payload = f'.arr[0 ..< {nim_string}.nCount.int32]'
+        if int(prim_basic.Min) != int(prim_basic.Max):
+            payload = f'.arr[0 ..< {nim_string}.nCount.int32]'
+        else:
+            payload = f''
     return payload
 
 
@@ -153,7 +156,7 @@ def child_spelling(name, bty):
     raise TypeError(f'Child not found: {name}')
 
 
-def ia5string_raw(prim: ogAST.PrimStringLiteral):
+def ia5string_raw(prim: ogAST.PrimStringLiteral, fill: bool = False):
     ''' IA5 Strings are of type String in Ada but this is not directly
         compatible with variable-length strings as defined in ASN.1
         Since the Ada type maps to a null-terminated C type, we have to make
@@ -161,7 +164,9 @@ def ia5string_raw(prim: ogAST.PrimStringLiteral):
         with NULL character. To know the size, we can use adaasn1rtl.getStringSize
         '''
     # TODO
-    return "('" + "', '".join(prim.value[1:-1]) + "', others => Standard.ASCII.NUL)"
+    filled = "', '".join(prim.value[1:-1])
+    empty = "', '".join([r'\0' for _ in range(101 - len(prim.value[1:-1]))])
+    return "['" + filled + ("', '" + empty)*fill +  "']"
 
 
 def external_ri_list(process, SEPARATOR, ASN1SCC):
@@ -239,7 +244,6 @@ def generate_nim_definitions(procname: str, path: str):
 
     asn_files = [os.path.splitext(file)[0] for file in os.listdir() if os.path.splitext(file)[1] == '.asn']
     header_files_str = " ".join([file.split('.')[0] + '.h' for file in asn_files])
-
 
     module_folder = os.path.dirname(inspect.getfile(generate_nim_definitions))
     commands = [

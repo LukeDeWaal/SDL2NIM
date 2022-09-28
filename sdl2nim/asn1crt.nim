@@ -16,6 +16,11 @@ macro goto*(labelName: untyped): untyped =
     result = quote do:
       {.emit: "goto " & `name` & ";".}  
 
+proc `=>`*(a, b: bool): bool =
+    # Implies operator
+    result = ((not a) or b)
+
+
 when not defined(NULL):
     const
         NULL* = 0
