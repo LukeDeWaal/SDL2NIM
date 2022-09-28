@@ -249,8 +249,7 @@ def generate_nim_definitions(procname: str, path: str):
     commands = [
         f'asn1scc --rename-policy 3 -typePrefix {settings.ASN1SCC} -o . -equal -c *.asn',
         f'cp {module_folder}/asn1crt.nim .',
-        f'c2nim --importc {header_files_str}',
-        'gcc -c *.c',
+        f'c2nim --importc {header_files_str}'
     ]
 
     os.system(' && '.join(commands))

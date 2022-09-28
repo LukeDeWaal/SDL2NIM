@@ -1168,9 +1168,10 @@ def _call_external_function(output, **kwargs) -> str:
                                   (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
                         if basic_param.kind == 'IA5StringType':
                             p_id = ia5string_raw(param)
+                            N = len(param.inputString[1:-1])
                             code.extend([
-                                f"{tmp_id}[0 ..< {len(p_id.split(','))}] = {p_id}",
-                                f"for {tmp_id}_idx in {len(p_id.split(','))} ..< len({tmp_id}):",
+                                f"{tmp_id}[0 ..< {N}] = {p_id}",
+                                f"for {tmp_id}_idx in {N} ..< len({tmp_id}):",
                                 rf"{tmp_id}[{tmp_id}_idx] = ('\0').char",
                                 f"# end loop"
                             ])

@@ -495,7 +495,7 @@ def _assign_expression(expr, **kwargs):
             if not isinstance(expr.left, ogAST.PrimSubstring):
                 # only if left is not a substring, otherwise syntax
                 # would be wrong due to result of _prim_substring
-                strings.append(f"{left_str}.Data(1..{right_str}'Length) := {right_str}")
+                strings.append(f"{left_str}.arr[0 ..< {right_str}.len] = {right_str}")
             else:
                 # left is substring: no length, direct assignment
                 rlen = ""
@@ -504,7 +504,7 @@ def _assign_expression(expr, **kwargs):
         elif isinstance(expr.right, ogAST.ExprAppend):
             basic_right = find_basic_type(expr.right.exprType)
             rlen = append_size(expr.right)
-            strings.append("{lvar}.arr[0 ..< {lstr}] = {rvar}".format(lvar=left_str,
+            strings.append("{lvar}.arr[{lvar}.nCount ..< {lstr}] = {rvar}".format(lvar=left_str,
                                    rvar=right_str,
                                    lstr=rlen))
 
@@ -641,8 +641,8 @@ def _bitwise_operators(expr, **kwargs):
                 f"var tmp_idx_{expr.tmpVar}: {settings.ASN1SCC}Sint"
             ])
             code.extend([
-                f"for tmp_idx_{expr.tmpVar} in 0 .. len({left_str}.arr):",
-                f"tmp_bool_{expr.tmpVar}.arr[tmp_idx_{expr.tmpVar}] = ({left_str}.arr[tmp_idx_{expr.tmpVar}] {operand} {left_str}.arr[tmp_idx_{expr.tmpVar}]).{_cast}",
+                f"for tmp_idx_{expr.tmpVar} in 0 ..< len({left_str}.arr):",
+                f"tmp_bool_{expr.tmpVar}.arr[tmp_idx_{expr.tmpVar}] = ({left_str}.arr[tmp_idx_{expr.tmpVar}] {operand} {right_str}.arr[tmp_idx_{expr.tmpVar}]).{_cast}",
                 "# end for"
             ])
 
@@ -694,7 +694,7 @@ def _not_expression(expr, **kwargs):
                     f"var tmp_idx_{expr.tmpVar}: asn1SccSint"
                 ])
                 code.extend([
-                    f"for tmp_idx_{expr.tmpVar} in 0 .. len({settings.LPREFIX}.{expr.expr.value[0]}.arr):",
+                    f"for tmp_idx_{expr.tmpVar} in 0 ..< len({settings.LPREFIX}.{expr.expr.value[0]}.arr):",
                     f"tmp_{tp}_{expr.tmpVar}.arr[tmp_idx_{expr.tmpVar}] = not {settings.LPREFIX}.{expr.expr.value[0]}.arr[tmp_idx_{expr.tmpVar}]",
                     "# end loop"
                 ])
@@ -705,7 +705,7 @@ def _not_expression(expr, **kwargs):
 
         # TODO
     else:
-        nim_string = f'(not {expr_str})'
+        nim_string = f'(not ({expr_str}))'
 
     code.extend(expr_stmts)
     local_decl.extend(expr_local)
