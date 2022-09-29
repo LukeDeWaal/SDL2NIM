@@ -264,12 +264,14 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                     dstr = ia5string_raw(def_value)
 
                 elif varbty.kind == 'EnumeratedType':
-                    dstr = f'{variable_type.replace("-", "_")}_{dstr}'
+                    #dstr = f'{variable_type.replace("-", "_")}_{dstr}'
+                    pass
 
-                if dst:  # Hacky way to initialize anonymous Choice types
-                    if "%" in dst[0]:
-                        post_actions.append(dst[0] % var_name)
-                    dst = []
+                if isinstance(def_value, ogAST.PrimChoiceItem):
+                    if dst:  # Hacky way to initialize anonymous Choice types
+                        if "%" in dst[0]:
+                            post_actions.append(dst[0] % (settings.LPREFIX + "." + var_name))
+                        dst = []
 
                 assert not dst and not dlocal, \
                     'DCL: Expecting a ground expression'

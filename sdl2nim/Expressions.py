@@ -414,6 +414,9 @@ def _basic_operators(expr, **kwargs):
 @expression.register(ogAST.ExprEq)
 @expression.register(ogAST.ExprNeq)
 def _equality(expr, **kwargs):
+
+
+
     code, left_str, local_decl = expression(expr.left, readonly=1)
     right_stmts, right_str, right_local = expression(expr.right, readonly=1)
 
@@ -457,18 +460,38 @@ def _equality(expr, **kwargs):
     else:
         if lbty.kind.startswith('Real') or rbty.kind.startswith('Real'):
             nim_string = f'abs({left_str} - {right_str}) {"<=" if eq else ">"} 1e-5'
+
         elif lbty.kind == 'SequenceOfType' and rbty.kind == lbty.kind:
             if lbty.Min == lbty.Max and rbty.Min == rbty.Max and lbty.Min == rbty.Min:
                 nim_string = f'{left_str} {operand} {right_str}'
             elif lbty.Min != lbty.Max and rbty.Min != rbty.Max and lbty.Min == rbty.Min and lbty.Max == rbty.Max:
                 nim_string = f'({left_str}.nCount {operand} {right_str}.nCount) {"and" if eq else "or"} ({left_str}.arr[0 ..< {left_str}.nCount] {operand} {right_str}.arr[0 ..< {right_str}.nCount] )'
+
         elif isinstance(expr.right, ogAST.PrimStringLiteral) ^ isinstance(expr.left, ogAST.PrimStringLiteral):
             if isinstance(expr.right, ogAST.PrimStringLiteral):
+                # Hacky Way of determining cast to char or byte
+                if isinstance(expr.left, ogAST.PrimSelector):
+                    kind = find_basic_type(find_basic_type(expr.left.value[0].exprType).Children['s'].type).kind
+                    if kind.startswith('IA5'):
+                        right_str = ', '.join([f"{s}.char" for s in right_str.split(', ')])
+                    elif kind.startswith('Octet'):
+                        right_str = ', '.join([f"{s}.byte" for s in right_str.split(', ')])
+
                 nim_string = f"{left_str}[0 ..< {len(right_str.split(','))}] {operand} @[{right_str}]"
             else:
+                # Hacky Way of determining cast to char or byte
+                if isinstance(expr.right, ogAST.PrimSelector):
+                    kind = find_basic_type(find_basic_type(expr.right.value[0].exprType).Children['s'].type).kind
+                    if kind.startswith('IA5'):
+                        left_str = ', '.join([f"{s}.char" for s in left_str.split(', ')])
+                    elif kind.startswith('Octet'):
+                        left_str = ', '.join([f"{s}.byte" for s in left_str.split(', ')])
+
                 nim_string = f"{right_str}[0 ..< {len(left_str.split(','))}] {operand} @[{left_str}]"
+
         elif isinstance(expr.right, ogAST.PrimStringLiteral) and isinstance(expr.left, ogAST.PrimStringLiteral):
             nim_string = f'{left_str} {operand} {right_str}'
+
         else:
             print(f"Cannot Compare Types: {lbty.kind} and {rbty.kind}", file=sys.stderr) # TODO
 
@@ -487,6 +510,7 @@ def _assign_expression(expr, **kwargs):
     if (basic_left.kind == 'IA5StringType') and isinstance(expr.right, ogAST.PrimStringLiteral):
         # TODO
         pass
+
 
     elif basic_left.kind in ('SequenceOfType', 'OctetStringType', 'BitStringType'):
         rlen = f"{right_str}.len"
@@ -839,7 +863,12 @@ def _enumerated_value(primary, **kwargs):
     # no "asn1Scc" prefix if the enumerated is a choice selector
     use_prefix = getattr(basic.EnumValues[each], "IsStandardEnum", True)
     prefix = type_name(basic, use_prefix=use_prefix)
-    string_hack = str(primary.exprType).split()[-1].strip(" \n<>\'\"").replace("-", "_").split('.')[-1].lower().capitalize().split('_selection')[0]
+
+    if 'selection' in str(primary.exprType):
+        string_hack = str(primary.exprType).split()[-1].strip(" \n<>\'\"").replace("-", "_").split('.')[-1].lower().capitalize().split('_selection')[0]
+    else:
+        string_hack = str(primary.exprType.ReferencedTypeName).replace("-", "_")
+
     nim_string = (prefix + string_hack + "_" + basic.EnumValues[each].EnumID) # TODO: Doesn't put right enum name
 
     return [], str(nim_string), []
@@ -890,17 +919,21 @@ def _empty_string(primary, **kwargs):
 
 
 @expression.register(ogAST.PrimStringLiteral)
+@expression.register(ogAST.PrimOctetStringLiteral)
 def _string_literal(primary, **kwargs):
     ''' Generate code for a string (Octet String) '''
     basic_type = find_basic_type(primary.exprType)
     # If user put a literal string to fill an Octet string,
     # then convert the string to an array of unsigned_8 integers
     # as expected by the Nim type corresponding to Octet String
+
+
+
     if isinstance(primary, ogAST.PrimOctetStringLiteral):
         # Hex string used as input
         unsigned_8 = [str(x) for x in primary.hexstring]
     else:
-        unsigned_8 = [str(ord(val)) + '.char' for val in primary.value[1:-1]]
+        unsigned_8 = [str(ord(val)) for val in primary.value[1:-1]]
 
     nim_string = ', '.join(unsigned_8)
     return [], str(nim_string), []

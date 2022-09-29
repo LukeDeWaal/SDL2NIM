@@ -137,15 +137,18 @@ def array_content(prim, values, asnty, expression: callable):
         rlen = ""
 
     split_vals = values.split(', ')
-    first_val = split_vals[0]
+    # first_val = split_vals[0]
     if isinstance(prim, ogAST.PrimStringLiteral):
-        first_val = f"{first_val}.byte"
+        if asnty.kind.startswith('Octet'):
+            split_vals = [f"{s}.byte" for s in split_vals]
+        else:
+            split_vals = [f"{s}.char" for s in split_vals]
     else:
         try:
-            first_val = f"{first_val}.{type_name(asnty.type)}"
+            split_vals = [f"{s}.{type_name(asnty.type)}" for s in split_vals]
         except AttributeError:
             pass
-    split_vals[0] = first_val
+    # split_vals[0] = first_val
     return f"[{', '.join(split_vals)}]" # TODO
 
 
@@ -284,7 +287,7 @@ task filegen, "Generate Nim Files":
 
 task build, "Build Project":
     filegenTask()
-    exec "nim c expressions.nim"
+    exec "nim c {procname}.nim"
     #exec "nim -c --nolinking:on --nimcache:. c {procname}.nim"
     #exec "gcc -o {procname}_demo *.c -I {libdir}" 
 
