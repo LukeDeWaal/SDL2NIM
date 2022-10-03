@@ -267,7 +267,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                     #dstr = f'{variable_type.replace("-", "_")}_{dstr}'
                     pass
 
-                if isinstance(def_value, ogAST.PrimChoiceItem):
+                if isinstance(def_value, (ogAST.PrimChoiceItem, ogAST.PrimSequence)):
                     if dst:  # Hacky way to initialize anonymous Choice types
                         if "%" in dst[0]:
                             post_actions.append(dst[0] % (settings.LPREFIX + "." + var_name))
@@ -284,6 +284,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         context_decl.extend(post_actions)
 
         # Add monitors, that are variables that must be set by an external
+        # module. They are not part of the global state of the process, and
         # module. They are not part of the global state of the process, and
         # are used by observer functions to read/write the system state
         # We don't use pointers because that is incompatible with aliases
@@ -354,8 +355,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # Generate the code of the start transition (if process not empty)
         Init_Done = f'{settings.LPREFIX}.init_done = true'
         rand_reset_decl = []
-        for rand_g in process.random_generator:
-            rand_reset_decl.append(f'Rand_{rand_g}_Pkg.Reset (Gen_{rand_g})')
+        rand_reset_decl.append('randomize()')
 
         start_transition = [
             'proc Startup(): void = ',
@@ -389,7 +389,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             f'    {process.name}_RI'
 
     # Import Std Modules
-    std_modules = 'import\n    ' + ',\n    '.join(["std/math", ]) # Add Other Libraries here # TODO
+    std_modules = 'import\n    ' + ',\n    '.join(["std/math", "std/random", ]) # Add Other Libraries here # TODO
     std_modules += "\n"
 
     taste_template = []
@@ -420,11 +420,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     rand_decl = []
     for each in process.random_generator:
         rand_decl.extend([
-            f'type Rand_{each}_ty is new asn1SccSint range 1 .. {each}',
-            f'package Rand_{each}_Pkg is new  Ada.Numerics.Discrete_Random' \
-            f' (Rand_{each}_ty)',
-            f'Gen_{each} : Rand_{each}_Pkg.Generator',
-            f'Num_{each} : Rand_{each}_ty'])
+            f'var Rand_{each}_gen: Rand = initRand()',
+        ])
 
     nim_decl_template = [
         '### This file was generated automatically by OpenGEODE: DO NOT MODIFY IT !\n'
@@ -499,18 +496,19 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     # Generate the code of internal operators, if needed
     if process.errorstates or process.ignorestates or process.successstates:
-        obs_status = [f'function Observer_State_Status return {settings.ASN1SCC}Observer_State_Kind is',
-                      f'(case {settings.LPREFIX}.state is']
+        obs_status = [f'proc Observer_State_Status(): {settings.ASN1SCC}Observer_State_Kind =',
+                      f'(case {settings.LPREFIX}.state:']
         if process.errorstates:
             opts = ' | '.join(f'{settings.ASN1SCC}{st}' for st in process.errorstates)
-            obs_status.append(f'  of {opts} => {settings.ASN1SCC}Error_State,')
+            obs_status.extend([f'of {opts}:', f'{settings.ASN1SCC}Error_State'])
         if process.ignorestates:
             opts = ' | '.join(f'{settings.ASN1SCC}{st}' for st in process.ignorestates)
-            obs_status.append(f'  of {opts} => {settings.ASN1SCC}Ignore_State,')
+            obs_status.extend([f'of {opts}:', f'{settings.ASN1SCC}Ignore_State'])
         if process.errorstates:
             opts = ' | '.join(f'{settings.ASN1SCC}{st}' for st in process.successstates)
-            obs_status.append(f'  of {opts} => {settings.ASN1SCC}Success_State,')
-        obs_status.append(f'  of others => {settings.ASN1SCC}Regular_State)')
+            obs_status.extend([f'of {opts}:', f'{settings.ASN1SCC}Success_State'])
+        obs_status.append(f'else:')
+        obs_status.append(f'{settings.ASN1SCC}Regular_State)')
         obs_status.append('\n')
         taste_template.extend(obs_status)
 
@@ -615,7 +613,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 for inp in input_def.parameters:
                     # Assign the (optional and unique) parameter
                     # to the corresponding process variable
-                    dest.append(f'{settings.LPREFIX}.{inp} = {param_name}')
+                    if param_name:
+                        dest.append(f'{settings.LPREFIX}.{inp} = {param_name}')
                 # Execute the corresponding transition
                 if input_def.transition:
                     dest.append(f'Execute_Transition ({input_def.transition_id})')
@@ -701,10 +700,10 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         sig = signal['name']
         param_name = signal.get('param_name') or f'{sig}_param'
         # Add (optional) RI parameter
-        param_spec = ''
+        param_spec = '(): void'
         if 'type' in signal:
             typename = type_name(signal['type'])
-            param_spec = f' ({param_name} : {typename}): {typename}'
+            param_spec = f' ({param_name} : ptr {typename}): void'
         if not generic:
             nim_decl_template.append('###  {}equired interface "{}"'
                                      .format("Paramless r" if not 'type' in signal
@@ -715,9 +714,6 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                                          f'= {process.name}_RI.{sig}')
             ri_stub_decl.append(f'proc {sig}*{param_spec}')
             ri_stub_src.extend([f'proc {sig}*{param_spec} =', 'pass'])
-            #  TASTE generates the pragma import in <function>_ri.ads
-            #  therefore do not generate it in the .ads
-            # nim_decl_template.append(f'pragma Import (C, RI{settings.SEPARATOR}{sig}, "{process.name.lower()}_RI_{sig}");')
 
     # for the .ads file, generate the declaration of the external procedures
     for proc in (proc for proc in process.procedures if proc.external):
@@ -779,7 +775,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             # Generic functions get the SET and RESET from template
             pass
 
-    if instance:
+    if instance: # TODO
         # Instance of a process type, all the RIs (including timers) must
         # be gathered to instantiate the package
         pkg_decl = (f"package {process.name}_Instance is new {process.instance_of_name}")
@@ -1391,10 +1387,10 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
         # code.append('null;')
         # return code, local_decl
         nb = len(dec.answers)
-        code.append(f'case Rand_{nb}_Pkg.Random (Gen_{nb}) is')
+        code.append(f'case rand(Rand_{nb}_gen, {eval(f"{nb} - 1")}):')
     elif dec.kind == 'informal_text':
         LOG.warning('Informal decision ignored')
-        code.append(f'-- Informal decision was ignored: {dec.inputString}')
+        code.append(f'### Informal decision was ignored: {dec.inputString}')
         code.append('pass')
         return code, local_decl
     else:
@@ -1426,9 +1422,10 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
 
     previous_ans = ''
     for idx, a in enumerate(dec.answers):
-        code.extend(traceability(a))
+        trac = traceability(a)
         if dec.kind == 'any':
-            code.append(f'when {idx + 1} =>');
+            code.append(f'of {idx}:')
+            code.extend(trac)
             if not branch_to:
                 if a.transition:
                     stmt, tr_decl = generate(a.transition)
@@ -1444,6 +1441,7 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
                 code.append(f'trId := {branch_to};')
             continue
         if dec.kind == 'informal_text':
+            code.extend(trac)
             break
 
         sub_sep = ''
@@ -1572,7 +1570,9 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
         else:
             code.extend(else_code)
     except:
-        pass
+        if dec.kind == 'any':
+            code.extend(['else:', 'pass'])
+
     if sep != 'if ' and last:
         # If there is at least one 'if' branch
         # "last" is usually "end if;" but it can be changed by parameter
@@ -1657,7 +1657,7 @@ def _transition(tr, **kwargs):
                                 states_prefix = (f"{settings.ASN1SCC}{s}" for s in sta)
                                 joined_states = " | ".join(states_prefix)
                                 code.extend(
-                                    [f'when {joined_states}:',
+                                    [f'of {joined_states}:',
                                      statement])
 
                         code.extend(['else:',
@@ -1787,7 +1787,7 @@ def _inner_procedure(proc, **kwargs):
             inner_code, inner_local = generate(inner_proc)
             local_decl.extend(inner_local)
             code.extend(inner_code)
-        code.append(f'{pi_header} is')
+        code.append(f'{pi_header} =')
         for var_name, (var_type, def_value) in proc.variables.items():
             typename = type_name(var_type)
             if def_value:
@@ -1855,13 +1855,12 @@ def _inner_procedure(proc, **kwargs):
             code_labels.extend(code_label)
             tr_decl.extend(label_decl)
         code.extend(set(tr_decl))
-        code.append('begin')
         code.extend(tr_code)
         code.extend(code_labels)
         if proc.exported:
-            code.append(f'end {proc.inputString}')
+            code.append(f'# end {proc.inputString}')
         else:
-            code.append(f'end p{settings.SEPARATOR}{proc.inputString}')
+            code.append(f'# end p{settings.SEPARATOR}{proc.inputString}')
     code.append('\n')
 
     # Reset the scope to how it was prior to the procedure definition

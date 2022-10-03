@@ -72,7 +72,7 @@ def type_name(a_type, use_prefix=True, prefix=settings.ASN1SCC):
     elif a_type.kind.startswith('Integer32'):
         return 'asn1SccSint32'
     elif a_type.kind.startswith('IntegerU8'):
-        return 'asn1byte'
+        return 'byte'
     elif a_type.kind.startswith('Integer'):
         if float(a_type.Min) >= 0:
             return 'asn1SccUint'
@@ -111,7 +111,7 @@ def string_payload(prim, nim_string, TYPES):
         if int(prim_basic.Min) != int(prim_basic.Max):
             payload = f'.arr[0 ..< {nim_string}.nCount.int32]'
         else:
-            payload = f''
+            payload = f'.arr'
     return payload
 
 
@@ -124,17 +124,20 @@ def array_content(prim, values, asnty, expression: callable):
     asnty is the reference type of the string literal '''
     if isinstance(prim, ogAST.PrimEmptyString):
         return values
-    if asnty.Min != asnty.Max:
-        length = len(prim.value)
-        if isinstance(prim, ogAST.PrimStringLiteral):
-            # Quotes are kept in string literals
-            length -= 2
-        elif isinstance(prim, ogAST.PrimOctetStringLiteral):
-            length = len(prim.hexstring)
-        # Reference type can vary -> there is a Length field
-        rlen = f", nCount: {length}"
-    else:
-        rlen = ""
+    # if asnty.Min != asnty.Max:
+    #
+    #     if isinstance(prim, ogAST.PrimStringLiteral):
+    #         # Quotes are kept in string literals
+    #         length = len(prim.value) - 2
+    #     elif isinstance(prim, ogAST.PrimOctetStringLiteral):
+    #         length = len(prim.hexstring)
+    #     else:
+    #         length = len(prim.value)
+    #
+    #     # Reference type can vary -> there is a Length field
+    #     rlen = f", nCount: {length}"
+    # else:
+    #     rlen = ""
 
     split_vals = values.split(', ')
     # first_val = split_vals[0]
@@ -143,6 +146,14 @@ def array_content(prim, values, asnty, expression: callable):
             split_vals = [f"{s}.byte" for s in split_vals]
         else:
             split_vals = [f"{s}.char" for s in split_vals]
+    elif isinstance(prim, ogAST.PrimVariable):
+        if asnty.kind == 'SequenceOfType':
+            if asnty.Min == asnty.Max:
+                return f"{values}.arr"
+            else:
+                return f"{values}.arr[0 ..< {values}.nCount]"
+        else:
+            return values
     else:
         try:
             split_vals = [f"{s}.{type_name(asnty.type)}" for s in split_vals]
@@ -230,8 +241,12 @@ def procedure_header(proc, SEPARATOR):
                         ptype=typename))
         pi_header += ','.join(params)
         pi_header += '):'
+    else:
+        pi_header += '():'
     if ret_type:
         pi_header += f' {ret_type}'
+    else:
+        pi_header += ' void'
     return pi_header
 
 

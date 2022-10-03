@@ -1,26 +1,5 @@
 import std/macros
 
-template pass*() = 
-  discard nil;
-
-macro label*(labelName, body: untyped): untyped =
-    expectKind(labelName, nnkIdent)
-    let name = repr(labelName)
-    result = quote do:
-      {.emit: `name` & ":".}
-      `body`
-
-macro goto*(labelName: untyped): untyped =
-    expectKind(labelName, nnkIdent)
-    let name = repr(labelName)
-    result = quote do:
-      {.emit: "goto " & `name` & ";".}  
-
-proc `=>`*(a, b: bool): bool =
-    # Implies operator
-    result = ((not a) or b)
-
-
 when not defined(NULL):
     const
         NULL* = 0
@@ -199,3 +178,32 @@ template ASSERT_OR_RETURN_FALSE*(Expression: untyped): void =
             return FALSE
         if not 0:
            break
+
+template pass*() =
+  discard nil;
+
+macro label*(labelName, body: untyped): untyped =
+    expectKind(labelName, nnkIdent)
+    let name = repr(labelName)
+    result = quote do:
+      {.emit: `name` & ":".}
+      `body`
+
+macro goto*(labelName: untyped): untyped =
+    expectKind(labelName, nnkIdent)
+    let name = repr(labelName)
+    result = quote do:
+      {.emit: "goto " & `name` & ";".}
+
+proc `=>`*(a, b: bool): bool =
+    # Implies operator
+    result = ((not a) or b)
+
+proc `//`*[T](a, b: T): T =
+    # Append operator
+    result.nCount = a.nCount + b.nCount
+    result.arr[0 ..< a.nCount] = a.arr[0 ..< a.nCount]
+    result.arr[a.nCount ..< a.nCount + b.nCount] = b.arr[0 ..< b.nCount]
+
+proc num*[T: Ordinal | enum](v: T): asn1SccUint =
+  return ord(v).asn1SccUint

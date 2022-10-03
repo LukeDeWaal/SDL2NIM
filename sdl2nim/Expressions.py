@@ -1,4 +1,3 @@
-
 import inspect
 import re
 
@@ -35,8 +34,6 @@ __all__ = ['expression',
            'append_size',
            'external_ri_list',
            'procedure_header']
-
-
 
 
 def find_basic_type(a_type):
@@ -109,7 +106,7 @@ def _prim_call(prim, **kwargs):
             else:
                 nim_string += f'abs({param_str})'
         elif func == 'chr':
-            nim_string += f'({param_str}).asn1byte'
+            nim_string += f'({param_str}).byte'
         elif func == 'float':
             nim_string += f'({param_str}).asn1Real'
         elif func == 'fix':
@@ -194,7 +191,7 @@ def _prim_call(prim, **kwargs):
         stmts.extend(param_stmts)
         local_decl.extend(local_var)
 
-        nim_string += f"ord({param_str})"
+        nim_string += f"num({param_str})"
 
     elif func == 'exist':
         exp = params[0]
@@ -216,7 +213,19 @@ def _prim_call(prim, **kwargs):
 
         nim_string += f"{param_str}.kind"
 
-    elif func in ('observer_status', 'val', 'to_selector',
+    elif func == 'val':
+        operands = [None, None]
+        for idx, param in enumerate(params):
+            stmt, operands[idx], local = expression(param, readonly=1)
+            stmts.extend(stmt)
+            local_decl.extend(local)
+
+        numb_type = find_basic_type(params[0].exprType)
+        enum_type = params[1].value[0]
+
+        nim_string = f"{operands[0]}.{settings.ASN1SCC}{enum_type}"
+
+    elif func in ('observer_status', 'to_selector',
                   'to_enum', 'choice_to_int',):
         # TODO
         pass
@@ -240,7 +249,7 @@ def _prim_index(prim, **kwargs):
     local_decl.extend(receiver_decl)
 
     lbty = find_basic_type(prim.value[0].exprType)
-    if lbty.kind.startswith('SequenceOf'):
+    if lbty.kind in ('SequenceOfType', 'OctetStringType'):
         nim_string += '.arr'
 
     index = prim.value[1]['index'][0]
@@ -332,6 +341,7 @@ def _primary_state_reference(prim, **kwargs):
     ''' Reference to the current state '''
     return [], f'{settings.LPREFIX}.state', []
 
+
 @expression.register(ogAST.ExprPlus)
 @expression.register(ogAST.ExprMul)
 @expression.register(ogAST.ExprMinus)
@@ -375,7 +385,6 @@ def _basic_operators(expr, **kwargs):
                                    ogAST.PrimBitStringLiteral)):
         left_str = str(expr.left.numeric_value)
 
-
     if left_is_numeric and right_is_numeric:
         # Both sides are literals : compute the result on the fly
         nim_string = "{}".format(eval("{left} {op} {right}"
@@ -395,9 +404,9 @@ def _basic_operators(expr, **kwargs):
     elif ltype != rtype:
         cast = ltype
         nim_string = '({left} {op} ({right}).{cast})'.format(left=left_str,
-                                                    op=operand,
-                                                    right=right_str,
-                                                    cast=cast)
+                                                             op=operand,
+                                                             right=right_str,
+                                                             cast=cast)
 
     else:
         nim_string = '({left} {op} {right})'.format(left=left_str,
@@ -414,9 +423,6 @@ def _basic_operators(expr, **kwargs):
 @expression.register(ogAST.ExprEq)
 @expression.register(ogAST.ExprNeq)
 def _equality(expr, **kwargs):
-
-
-
     code, left_str, local_decl = expression(expr.left, readonly=1)
     right_stmts, right_str, right_local = expression(expr.right, readonly=1)
 
@@ -445,7 +451,6 @@ def _equality(expr, **kwargs):
                           'ChoiceEnumeratedType')
 
     nim_string = ''
-
 
     if basic:
         if isinstance(expr.right, (ogAST.PrimBitStringLiteral,
@@ -493,7 +498,7 @@ def _equality(expr, **kwargs):
             nim_string = f'{left_str} {operand} {right_str}'
 
         else:
-            print(f"Cannot Compare Types: {lbty.kind} and {rbty.kind}", file=sys.stderr) # TODO
+            print(f"Cannot Compare Types: {lbty.kind} and {rbty.kind}", file=sys.stderr)  # TODO
 
     return code, str(nim_string), local_decl
 
@@ -506,6 +511,7 @@ def _assign_expression(expr, **kwargs):
     right_stmts, right_str, right_local = expression(expr.right, readonly=1)
 
     basic_left = find_basic_type(expr.left.exprType)
+    basic_right = find_basic_type(expr.right.exprType)
 
     if (basic_left.kind == 'IA5StringType') and isinstance(expr.right, ogAST.PrimStringLiteral):
         # TODO
@@ -527,18 +533,35 @@ def _assign_expression(expr, **kwargs):
 
         elif isinstance(expr.right, ogAST.ExprAppend):
             basic_right = find_basic_type(expr.right.exprType)
-            rlen = append_size(expr.right)
-            strings.append("{lvar}.arr[{lvar}.nCount ..< {lstr}] = {rvar}".format(lvar=left_str,
-                                   rvar=right_str,
-                                   lstr=rlen))
+
+            if left_str in right_str:
+                rlen = append_size(expr.right)
+                strings.append("{lvar}.arr[0 ..< {lstr}] = {rvar}".format(lvar=left_str,
+                                                                          rvar=right_str,
+                                                                          lstr=rlen))
+
+            elif not right_str.startswith('tmp'):
+                rlen = append_size(expr.right)
+                strings.append("{lvar}.arr[{lvar}.nCount ..< {lstr}] = {rvar}".format(lvar=left_str,
+                                                                                      rvar=right_str,
+                                                                                      lstr=rlen))
+            else:
+                rlen = f"tmp{expr.right.tmpVar}.nCount"
+                strings.append("{lvar}.arr[0 ..< {lstr}] = {rvar}".format(lvar=left_str,
+                                                                          rvar=right_str,
+                                                                          lstr=rlen))
 
         elif isinstance(expr.right, (ogAST.PrimSequenceOf,
                                      ogAST.PrimStringLiteral)):
             if not isinstance(expr.left, ogAST.PrimSubstring):
                 content = array_content(expr.right, right_str, basic_left)
                 if basic_left.Min != basic_left.Max:
+                    if basic_left.kind == 'OctetStringType':
+                        newlen = len(right_str.split(","))
+                    else:
+                        newlen = len(expr.right.value)
                     strings.extend([
-                        f"{left_str}.nCount = ({len(expr.right.value)}).cint",
+                        f"{left_str}.nCount = ({newlen}).cint",
                         f"{left_str}.arr[0 ..< {left_str}.nCount] = @{content}"])
                 else:
                     strings.extend([
@@ -548,6 +571,24 @@ def _assign_expression(expr, **kwargs):
                 strings.append(f"{left_str} = ({right_str})")
 
             rlen = None
+
+        elif isinstance(expr.right, (ogAST.ExprNot, )):
+            if not expr.right.expr.is_raw:
+                content = array_content(expr.right.expr, right_str, basic_left)
+            else:
+                content = right_str
+            if basic_left.Min != basic_left.Max:
+                if expr.right.expr.is_raw: newlen = len(expr.right.expr.value)
+                else: newlen = f"{right_str}.nCount"
+                strings.extend([
+                    f"{left_str}.nCount = ({newlen}).cint",
+                    f"{left_str}.arr[0 ..< {left_str}.nCount] = {content}"]
+                )
+            else:
+                strings.extend([
+                    f"{left_str}.arr[0 ..< {len(content.split(','))}] = @({content})"])
+            rlen = None
+
         else:
             # Right part is a variable
             strings.append(f"{left_str} = {right_str}")
@@ -659,7 +700,8 @@ def _bitwise_operators(expr, **kwargs):
                 right_payload = right_str
 
         elif left_bty.kind.startswith('SequenceOf') and left_bty.kind == right_bty.kind:
-            _cast = type_name(find_basic_type(expr.exprType).type)  # TODO: Feels hacky, probably there's a cleaner way to do this?
+            _cast = type_name(
+                find_basic_type(expr.exprType).type)  # TODO: Feels hacky, probably there's a cleaner way to do this?
             local_decl.extend([
                 f"var tmp_bool_{expr.tmpVar}: {type_name(expr.left.exprType)}",
                 f"var tmp_idx_{expr.tmpVar}: {settings.ASN1SCC}Sint"
@@ -717,15 +759,23 @@ def _not_expression(expr, **kwargs):
                     f"var tmp_{tp}_{expr.tmpVar}: {tp}",
                     f"var tmp_idx_{expr.tmpVar}: asn1SccSint"
                 ])
+                loop_range = f"0 ..< {settings.LPREFIX}.{expr.expr.value[0]}.nCount" if bty_outer.Min != bty_outer.Max \
+                        else f"0 ..< len({settings.LPREFIX}.{expr.expr.value[0]}.arr)"
+
+                if bty_inner.Min != bty_inner.Max:
+                    lencode = f"tmp_{tp}_{expr.tmpVar}.nCount = {settings.LPREFIX}.{expr.expr.value[0]}.nCount"
+                else:
+                    lencode = ''
+                if lencode: code.append(lencode)
                 code.extend([
-                    f"for tmp_idx_{expr.tmpVar} in 0 ..< len({settings.LPREFIX}.{expr.expr.value[0]}.arr):",
+                    f"for tmp_idx_{expr.tmpVar} in {loop_range}:",
                     f"tmp_{tp}_{expr.tmpVar}.arr[tmp_idx_{expr.tmpVar}] = not {settings.LPREFIX}.{expr.expr.value[0]}.arr[tmp_idx_{expr.tmpVar}]",
                     "# end loop"
                 ])
+
                 nim_string = f"tmp_{tp}_{expr.tmpVar}"
         else:
             raise TypeError("Unexpected Type in ExprNot")
-
 
         # TODO
     else:
@@ -780,15 +830,62 @@ def _append(expr, **kwargs):
         right_self_standing = True
     else:
         payload = ''
+
     if isinstance(expr.right, ogAST.PrimSubstring):
         right_self_standing = True
+
     right = '{}{}'.format(right_str, payload)
+
     try:
         name_of_type = type_name(expr.expected_type)
     except (NotImplementedError, AttributeError):
         name_of_type = type_name(expr.left.exprType)
 
-    nim_string += f"{right_str}{payload}"
+    left_arr = array_content(expr.left, left_str, lbtype)
+    right_arr = array_content(expr.right, right_str, rbtype)
+
+    if not (right_self_standing or left_self_standing):
+        local_decl.extend([
+            f"var tmp{expr.tmpVar}: {name_of_type}"
+        ])
+
+        if isinstance(expr.left, ogAST.PrimSequenceOf) and isinstance(expr.right, ogAST.PrimSequenceOf):
+            size = len(expr.left.value) + len(expr.right.value)
+            concat = [
+                f"tmp{expr.tmpVar}.arr[0 ..< {size}] = [{left_arr[1:-1]}, {right_arr[1:-1]}]"
+            ]
+        elif isinstance(expr.left, ogAST.PrimSequenceOf) and not isinstance(expr.right, ogAST.PrimSequenceOf):
+            size = f"tmp{expr.right.tmpVar}.nCount + {len(expr.left.value)}"
+            concat = [
+                f"tmp{expr.tmpVar}.arr[0 ..< {len(expr.left.value)}] = {left_arr}",
+                f"tmp{expr.tmpVar}.arr[{len(expr.left.value)} ..< {len(expr.left.value)} + tmp{expr.right.tmpVar}.nCount] = tmp{expr.right.tmpVar}.arr[0 ..< tmp{expr.right.tmpVar}.nCount]"
+            ]
+        elif not isinstance(expr.left, ogAST.PrimSequenceOf) and isinstance(expr.right, ogAST.PrimSequenceOf):
+            size = f"tmp{expr.left.tmpVar}.nCount + {len(expr.right.value)}"
+            concat = [
+                f"tmp{expr.tmpVar}.arr[0 ..< tmp{expr.left.tmpVar}.nCount] = tmp{expr.left.tmpVar}.arr[0 ..< tmp{expr.left.tmpVar}.nCount]",
+                f"tmp{expr.tmpVar}.arr[tmp{expr.left.tmpVar}.nCount ..< tmp{expr.left.tmpVar}.nCount + {len(expr.right.value)}] = {right_arr}"
+            ]
+        else:
+            raise ValueError("Expected at least one SeqOf")
+
+        stmts.append(f"tmp{expr.tmpVar}.nCount += {size}")
+        stmts.extend(concat)
+        nim_string = f"tmp{expr.tmpVar}.arr[0 ..< {size}]"
+
+    elif right_self_standing and left_self_standing:
+        nim_string = f"({left_str} // {right_str}).arr[0 ..< {left_str}.nCount + {right_str}.nCount]"
+    elif right_self_standing:
+        local_decl.extend([
+            f"var tmp{expr.tmpVar}: {name_of_type}"
+        ])
+        not_implemented_error()
+    else:
+        local_decl.extend([
+            f"var tmp{expr.tmpVar}: {name_of_type}"
+        ])
+        nim_string = right_arr
+        #nim_string += f"{right_str}{payload}"
 
     return stmts, str(nim_string), local_decl
 
@@ -865,11 +962,12 @@ def _enumerated_value(primary, **kwargs):
     prefix = type_name(basic, use_prefix=use_prefix)
 
     if 'selection' in str(primary.exprType):
-        string_hack = str(primary.exprType).split()[-1].strip(" \n<>\'\"").replace("-", "_").split('.')[-1].lower().capitalize().split('_selection')[0]
+        string_hack = str(primary.exprType).split()[-1].strip(" \n<>\'\"").replace("-", "_").split('.')[
+            -1].lower().capitalize().split('_selection')[0]
     else:
         string_hack = str(primary.exprType.ReferencedTypeName).replace("-", "_")
 
-    nim_string = (prefix + string_hack + "_" + basic.EnumValues[each].EnumID) # TODO: Doesn't put right enum name
+    nim_string = (prefix + string_hack + "_" + basic.EnumValues[each].EnumID)  # TODO: Doesn't put right enum name
 
     return [], str(nim_string), []
 
@@ -881,7 +979,7 @@ def _choice_determinant(primary, **kwargs):
     for each in primary.exprType.EnumValues:
         if each.lower() == enumerant:
             break
-    nim_string = primary.exprType.EnumValues[each].EnumID # TODO
+    nim_string = primary.exprType.EnumValues[each].EnumID  # TODO
     return [], str(nim_string), []
 
 
@@ -927,8 +1025,6 @@ def _string_literal(primary, **kwargs):
     # then convert the string to an array of unsigned_8 integers
     # as expected by the Nim type corresponding to Octet String
 
-
-
     if isinstance(primary, ogAST.PrimOctetStringLiteral):
         # Hex string used as input
         unsigned_8 = [str(x) for x in primary.hexstring]
@@ -965,7 +1061,7 @@ def _conditional(cond, **kwargs):
         then_str = cond.value['then'].value.replace("'", '"')
         else_str = cond.value['else'].value.replace("'", '"')
         lens = [len(then_str), len(else_str)]
-        tmp_type = 'cstring' #f'String (1 .. {max(lens) - 2})'
+        tmp_type = 'cstring'  # f'String (1 .. {max(lens) - 2})'
         # Ada require fixed-length strings, adjust with spaces
         if lens[0] < lens[1]:
             then_str = then_str[0:-1] + ' ' * (lens[1] - lens[0]) + '"'
@@ -995,7 +1091,8 @@ def _conditional(cond, **kwargs):
 
     then_len = None
     if not tmp_type.startswith('String') and tmp_type != 'cstring' and isinstance(cond.value['then'],
-                                                        (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
+                                                                                  (ogAST.PrimSequenceOf,
+                                                                                   ogAST.PrimStringLiteral)):
         then_str = array_content(cond.value['then'], then_str, basic_then)
     if isinstance(cond.value['then'], ogAST.ExprAppend):
         then_len = append_size(cond.value['then'])
@@ -1017,7 +1114,8 @@ def _conditional(cond, **kwargs):
     stmts.append('else:')
     else_len = None
     if not tmp_type.startswith('String') and tmp_type != 'cstring' and isinstance(cond.value['else'],
-                                                        (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
+                                                                                  (ogAST.PrimSequenceOf,
+                                                                                   ogAST.PrimStringLiteral)):
         else_str = array_content(cond.value['else'], else_str, basic_else)
 
     if isinstance(cond.value['else'], ogAST.ExprAppend):
@@ -1064,11 +1162,14 @@ def _sequence(seq, **kwargs):
     absent_fields = []
     for elem, value in seq.value.items():
         # Set the type of the field - easy thanks to ASN.1 flattened AST
+        elem_spec = None
         for each in type_children:
-            if each == elem:
+            if each.lower() == elem.lower():
                 elem_spec = type_children[each]
                 break
 
+        if elem_spec is None:
+            raise ValueError("Error")
         elem_specty = elem_spec.type
 
         # Find the basic type of the elem: if it is a number and the value
@@ -1078,7 +1179,7 @@ def _sequence(seq, **kwargs):
         value_stmts, value_str, local_var = expression(value, readonly=1)
 
         if isinstance(value, ogAST.PrimSequence):
-            value_stmts = [v % f"%s.{elem}" for v in value_stmts]
+            value_stmts = [v % f"%s.{elem.lower()}" for v in value_stmts]
 
         if isinstance(value, (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
             if elem_bty.kind.startswith('Integer'):
@@ -1088,19 +1189,18 @@ def _sequence(seq, **kwargs):
             else:
                 value_str = array_content(value, value_str, elem_bty)
 
-
         if elem.lower() in optional_fields:
             # Set optional field presence
             optional_fields[elem.lower()]['present'] = True
         sep = ', '
         stmts.extend(value_stmts)
-        stmts = [f"%s.{elem} = {value_str}"] + stmts
+        stmts = [f"%s.{elem.lower()} = {value_str}"] + stmts
         local_decl.extend(local_var)
     # Process optional fields
     if optional_fields:
         present_fields = list((fd_name, fd_data['ref'])
-                         for fd_name, fd_data in optional_fields.items()
-                         if fd_data['present'])
+                              for fd_name, fd_data in optional_fields.items()
+                              if fd_data['present'])
 
     stmts.extend([
         f"%s.exist.{varname} = 1" for varname, _dat in present_fields
@@ -1181,7 +1281,7 @@ def _choiceitem(choice, **kwargs):
         if curr_choice == search:
             prefix = f"{type_name(choice.exprType)}_{basic.Children[each].EnumID}"
             break
-    nim_string = f'{type_name(choice.exprType)}(kind: {type_name(choice.exprType)}_selection.{prefix})' #, u: {choice_str})'
+    nim_string = f'{type_name(choice.exprType)}(kind: {type_name(choice.exprType)}_selection.{prefix})'  # , u: {choice_str})'
 
     # Unsure if field is always called u
     # Union is anonymous in C, we dont know the typename in Nim
@@ -1214,7 +1314,7 @@ def append_size(append):
             else:
                 # Must be a variable of type SEQOF
                 _, inner, _ = expression(each, readonly=1)
-                if isinstance (each, ogAST.PrimSubstring):
+                if isinstance(each, ogAST.PrimSubstring):
                     result += "len({})".format(inner)
                 else:
                     result += "{}.nCount".format(inner)
