@@ -4,6 +4,7 @@
 
 import argparse
 import logging
+import os
 import traceback
 
 import opengeode
@@ -12,7 +13,7 @@ from . import NimGenerator, utils
 LOG = logging.getLogger(__name__)
 
 __all__ = ['sdl2nim']
-__version__ = '0.2'
+__version__ = '0.3'
 
 
 
@@ -38,6 +39,8 @@ def sdl2nim() -> int:
 
     LOG.setLevel(logging.INFO)
     options = parse_args()
+
+
 
     # parsing SDL/PR with opengeode
     try:

@@ -286,7 +286,7 @@ def _prim_substring(prim, **kwargs):
     # SDL starts indexes at 0, ASN1 Nim types at 0
     # SDL ends at final - 1, Nim at final, thus change range from .. to ..<
     if str.isnumeric(r1_string):
-        r1_string = str(int(r1_string) + 1)
+        r1_string = str(int(r1_string) - 1)
     else:
         r1_string = f"({r1_string}).asn1SccUint"
     if str.isnumeric(r2_string):
@@ -294,11 +294,18 @@ def _prim_substring(prim, **kwargs):
     else:
         r2_string = f"({r2_string}).asn1SccUint"
 
-    nim_string += f' ({r1_string} ..< {r2_string})'
     stmts.extend(r1_stmts)
     stmts.extend(r2_stmts)
     local_decl.extend(r1_local)
     local_decl.extend(r2_local)
+    local_decl.extend([
+        f"var tmp{prim.tmpVar}: {type_name(prim.exprType)}"
+    ])
+    stmts.extend([
+        f"tmp{prim.tmpVar}.nCount = ({r2_string} - {r1_string}).cint",
+        f"tmp{prim.tmpVar}.arr[0 ..< tmp{prim.tmpVar}.nCount] = {receiver_string}.arr[{r1_string} ..< {r2_string}]"
+    ])
+    nim_string = f"tmp{prim.tmpVar}"
 
     return stmts, str(nim_string), local_decl
 
@@ -467,10 +474,33 @@ def _equality(expr, **kwargs):
             nim_string = f'abs({left_str} - {right_str}) {"<=" if eq else ">"} 1e-5'
 
         elif lbty.kind == 'SequenceOfType' and rbty.kind == lbty.kind:
-            if lbty.Min == lbty.Max and rbty.Min == rbty.Max and lbty.Min == rbty.Min:
-                nim_string = f'{left_str} {operand} {right_str}'
-            elif lbty.Min != lbty.Max and rbty.Min != rbty.Max and lbty.Min == rbty.Min and lbty.Max == rbty.Max:
-                nim_string = f'({left_str}.nCount {operand} {right_str}.nCount) {"and" if eq else "or"} ({left_str}.arr[0 ..< {left_str}.nCount] {operand} {right_str}.arr[0 ..< {right_str}.nCount] )'
+            if expr.left.is_raw and expr.right.is_raw:
+                nim_string = str(left_str == right_str)
+            elif not (expr.left.is_raw or expr.right.is_raw):
+                if lbty.Min == lbty.Max and rbty.Min == rbty.Max and lbty.Min == rbty.Min:
+                    nim_string = f'{left_str} {operand} {right_str}'
+                elif lbty.Min != lbty.Max and rbty.Min != rbty.Max and lbty.Min == rbty.Min and lbty.Max == rbty.Max:
+                    nim_string = f'({left_str}.nCount {operand} {right_str}.nCount) {"and" if eq else "or"} ({left_str}.arr[0 ..< {left_str}.nCount] {operand} {right_str}.arr[0 ..< {right_str}.nCount] )'
+                else:
+                    raise ValueError("Unexpected Values")
+            else:
+                local_decl.extend([
+                    f"var tmp{expr.tmpVar}: %s"
+                ])
+                if expr.left.is_raw:
+                    local_decl[-1] = local_decl[-1] % type_name(expr.right.exprType)
+                    code.extend([
+                        f"tmp{expr.tmpVar}.nCount = {len(left_str.split(','))}",
+                        f"tmp{expr.tmpVar}.arr[0 ..< {len(left_str.split(','))}] = {array_content(expr.left, left_str, rbty)}"
+                    ])
+                    nim_string = f"((tmp{expr.tmpVar}.nCount == {right_str}.nCount) and (tmp{expr.tmpVar}.arr == {right_str}.arr))"
+                elif expr.right.is_raw:
+                    local_decl[-1] = local_decl[-1] % type_name(expr.left.exprType)
+                    code.extend([
+                        f"tmp{expr.tmpVar}.nCount = {len(right_str.split(','))}",
+                        f"tmp{expr.tmpVar}.arr[0 ..< {len(right_str.split(','))}] = {array_content(expr.right, right_str, lbty)}"
+                    ])
+                    nim_string = f"((tmp{expr.tmpVar}.nCount == {left_str}.nCount) and (tmp{expr.tmpVar}.arr == {left_str}.arr))"
 
         elif isinstance(expr.right, ogAST.PrimStringLiteral) ^ isinstance(expr.left, ogAST.PrimStringLiteral):
             if isinstance(expr.right, ogAST.PrimStringLiteral):
@@ -482,7 +512,7 @@ def _equality(expr, **kwargs):
                     elif kind.startswith('Octet'):
                         right_str = ', '.join([f"{s}.byte" for s in right_str.split(', ')])
 
-                nim_string = f"{left_str}[0 ..< {len(right_str.split(','))}] {operand} @[{right_str}]"
+                nim_string = f"{left_str}[0 ..< {len(right_str.split(','))}] {operand} [{right_str}]"
             else:
                 # Hacky Way of determining cast to char or byte
                 if isinstance(expr.right, ogAST.PrimSelector):
@@ -492,7 +522,7 @@ def _equality(expr, **kwargs):
                     elif kind.startswith('Octet'):
                         left_str = ', '.join([f"{s}.byte" for s in left_str.split(', ')])
 
-                nim_string = f"{right_str}[0 ..< {len(left_str.split(','))}] {operand} @[{left_str}]"
+                nim_string = f"{right_str}[0 ..< {len(left_str.split(','))}] {operand} [{left_str}]"
 
         elif isinstance(expr.right, ogAST.PrimStringLiteral) and isinstance(expr.left, ogAST.PrimStringLiteral):
             nim_string = f'{left_str} {operand} {right_str}'
@@ -532,19 +562,11 @@ def _assign_expression(expr, **kwargs):
                 strings.append(f"{left_str} = {right_str}")
 
         elif isinstance(expr.right, ogAST.ExprAppend):
-            basic_right = find_basic_type(expr.right.exprType)
-
-            if left_str in right_str:
+            if (left_str in right_str) or (not right_str.startswith('tmp')):
                 rlen = append_size(expr.right)
                 strings.append("{lvar}.arr[0 ..< {lstr}] = {rvar}".format(lvar=left_str,
                                                                           rvar=right_str,
                                                                           lstr=rlen))
-
-            elif not right_str.startswith('tmp'):
-                rlen = append_size(expr.right)
-                strings.append("{lvar}.arr[{lvar}.nCount ..< {lstr}] = {rvar}".format(lvar=left_str,
-                                                                                      rvar=right_str,
-                                                                                      lstr=rlen))
             else:
                 rlen = f"tmp{expr.right.tmpVar}.nCount"
                 strings.append("{lvar}.arr[0 ..< {lstr}] = {rvar}".format(lvar=left_str,
@@ -562,10 +584,10 @@ def _assign_expression(expr, **kwargs):
                         newlen = len(expr.right.value)
                     strings.extend([
                         f"{left_str}.nCount = ({newlen}).cint",
-                        f"{left_str}.arr[0 ..< {left_str}.nCount] = @{content}"])
+                        f"{left_str}.arr[0 ..< {left_str}.nCount] = {content}"])
                 else:
                     strings.extend([
-                        f"{left_str}.arr[0 ..< {len(content.split(','))}] = @{content}"])
+                        f"{left_str}.arr[0 ..< {len(content.split(','))}] = {content}"])
             else:
                 # left is substring: no length, direct assignment
                 strings.append(f"{left_str} = ({right_str})")
@@ -586,7 +608,7 @@ def _assign_expression(expr, **kwargs):
                 )
             else:
                 strings.extend([
-                    f"{left_str}.arr[0 ..< {len(content.split(','))}] = @({content})"])
+                    f"{left_str}.arr[0 ..< {len(content.split(','))}] = ({content})"])
             rlen = None
 
         else:
@@ -655,19 +677,21 @@ def _bitwise_operators(expr, **kwargs):
     right_stmts, right_str, right_local = expression(expr.right, readonly=1)
 
     basic_type = find_basic_type(expr.exprType)
+    left_bty = find_basic_type(expr.left.exprType)
+    right_bty = find_basic_type(expr.right.exprType)
 
     if hasattr(expr, 'operand'):
         operand = expr.operand
+        if left_bty.kind.startswith('Integer') and right_bty.kind.startswith('Integer'):
+            operand = f"bit{operand}"
     else:
         operand = '=>'
 
     if basic_type.kind != 'BooleanType':
-        left_bty = find_basic_type(expr.left.exprType)
-        right_bty = find_basic_type(expr.left.exprType)
 
-        if left_bty.kind.startswith('Integer') and right_bty.kind.startswith('Integer'):
+        if left_bty.kind.startswith('Integer') and right_bty.kind.startswith('Integer') and not expr.right.is_raw:
             # left and right are numbers
-            nim_string = f'({left_str} {operand} {right_str})'
+            nim_string = f'{operand}({left_str}, {right_str})'
 
         elif expr.right.is_raw:
             if left_bty.kind.startswith('Integer'):
@@ -678,7 +702,7 @@ def _bitwise_operators(expr, **kwargs):
                     right_payload = right_str
 
                 left_payload = left_str  # + string_payload(expr.left, left_str)
-                nim_string = f'({left_payload} {operand} {right_payload})'
+                nim_string = f'{operand}({left_payload}, {right_payload})'
 
             else:
                 # right is a raw value (hex/bit string)
@@ -724,7 +748,7 @@ def _bitwise_operators(expr, **kwargs):
                 nim_string = f'({left_payload} {operand} {right_payload})'
 
     elif isinstance(expr, ogAST.ExprImplies):
-        nim_string = f'((not {left_str}) or {right_str})'
+        nim_string = f'({left_str} {operand} {right_str})'
     else:
         nim_string = f'({left_str} {operand}{expr.shortcircuit} {right_str})'
 
@@ -875,17 +899,23 @@ def _append(expr, **kwargs):
 
     elif right_self_standing and left_self_standing:
         nim_string = f"({left_str} // {right_str}).arr[0 ..< {left_str}.nCount + {right_str}.nCount]"
-    elif right_self_standing:
-        local_decl.extend([
-            f"var tmp{expr.tmpVar}: {name_of_type}"
-        ])
-        not_implemented_error()
+
     else:
         local_decl.extend([
             f"var tmp{expr.tmpVar}: {name_of_type}"
         ])
-        nim_string = right_arr
-        #nim_string += f"{right_str}{payload}"
+        if right_self_standing:
+            stmts.extend([
+                f"tmp{expr.tmpVar}.nCount = {len(expr.left.value)}.cint",
+                f"tmp{expr.tmpVar}.arr[0 ..< {len(expr.left.value)}] = {left_arr}",
+            ])
+            nim_string = f"(tmp{expr.tmpVar} // {right_str}).arr[0 ..< tmp{expr.tmpVar}.nCount + {right_str}.nCount]"
+        else:
+            stmts.extend([
+                f"tmp{expr.tmpVar}.nCount = {len(expr.right.value)}.cint",
+                f"tmp{expr.tmpVar}.arr[0 ..< {len(expr.right.value)}] = {right_arr}",
+            ])
+            nim_string = f"({left_str} // tmp{expr.tmpVar}).arr[0 ..< {left_str}.nCount + tmp{expr.tmpVar}.nCount]"
 
     return stmts, str(nim_string), local_decl
 
@@ -1315,7 +1345,7 @@ def append_size(append):
                 # Must be a variable of type SEQOF
                 _, inner, _ = expression(each, readonly=1)
                 if isinstance(each, ogAST.PrimSubstring):
-                    result += "len({})".format(inner)
+                    result += "{}.nCount".format(inner) #"len({})".format(inner)
                 else:
                     result += "{}.nCount".format(inner)
     return result

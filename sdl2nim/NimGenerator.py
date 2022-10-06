@@ -166,6 +166,10 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     no_renames = Helper.code_generation_preprocessing(process)
 
     cwd = os.getcwd()
+
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
+
     os.chdir(output_dir)
 
     if not stop_condition:
@@ -248,12 +252,15 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                                      'BitStringType'):
                     dstr = array_content(def_value, dstr, varbty)
                     if isinstance(def_value, ogAST.PrimStringLiteral):
-                        S = len(def_value.value)-2
+                        if hasattr(def_value, 'hexstring'):
+                            S = len(def_value.hexstring)
+                        else:
+                            S = len(def_value.value)-2
                     else:
                         S = len(def_value.value)
                     context_decl.extend([
                         f"var tmp_{var_name}_{local_tmpvar_count}: {variable_type}",
-                        f"tmp_{var_name}_{local_tmpvar_count}.arr[0 ..< {S}] = @{dstr}"
+                        f"tmp_{var_name}_{local_tmpvar_count}.arr[0 ..< {S}] = {dstr}"
                     ])
                     if varbty.Min != varbty.Max:
                         context_decl.append(f"tmp_{var_name}_{local_tmpvar_count}.nCount = ({S}).cint",)
@@ -389,12 +396,12 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             f'    {process.name}_RI'
 
     # Import Std Modules
-    std_modules = 'import\n    ' + ',\n    '.join(["std/math", "std/random", ]) # Add Other Libraries here # TODO
+    std_modules = 'import\n    ' + ',\n    '.join(["std/math", "std/random", "std/bitops"]) # Add Other Libraries here # TODO
     std_modules += "\n"
 
     taste_template = []
     template_str = '' \
-                   "\n\n\n### ------ IMPLEMENTATION ------ ###\n\n\n{.compile: \"dataview_uniq.c\"}\n\n"
+                   "\n\n\n### ------ IMPLEMENTATION ------ ###\n\n"
 
     taste_template.append(template_str)
 
@@ -428,7 +435,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         f'### Generated on: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}\n'
         '\n'
         f'{std_modules}\n{asn1_modules}\n{ri_modules}\n'
-        "\n\n### ------ DECLARATION ------ ###\n\n"]
+        "\n\n### ------ DECLARATION ------ ###\n\n\n{.compile: \"dataview_uniq.c\"}\n\n"]
 
     ri_stub_decl = [
         '### This file is a stub for the implementation of the required interfaces',
@@ -1049,7 +1056,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         process_instance.cs_mapping = process.cs_mapping
         generate(process_instance, simu, instance=True, taste=taste)
 
-    generate_nim_definitions(process.name, process.filename)
+    generate_nim_definitions(process.name, process.filename, options['output_dir'])
 
     os.chdir(cwd)
 
@@ -1181,7 +1188,7 @@ def _call_external_function(output, **kwargs) -> str:
                         else:
                             tmpstr  = [
                                 f"{tmp_id}.nCount = ({len(p_id.split(','))}).cint",
-                                f"{tmp_id}.arr[0 ..< {len(p_id.split(','))}] = @{array_content(param, p_id, basic_param)}"
+                                f"{tmp_id}.arr[0 ..< {len(p_id.split(','))}] = {array_content(param, p_id, basic_param)}"
                             ]
                             p_id = tmpstr
                             code.extend(tmpstr)

@@ -37,6 +37,51 @@ def is_numeric(string) -> bool:
     return True
 
 
+def constant_extraction(filename: str):
+    # Find constant names
+    with open(filename + '.h', 'r') as hfile:
+        h_lines = hfile.readlines()
+
+    constants = {}
+    for line in h_lines:
+        if line.startswith('extern const'):
+            constants[line.split()[-1].strip("\n ;")] = ""
+
+    # Find constant values
+    with open(filename + '.c', 'r') as cfile:
+        c_lines = cfile.readlines()
+
+    for line in c_lines:
+        if line.startswith('const'):
+            splitvals = line.split()
+            # Expect 5 values, eg: const asn1SccByteUnsigned fullbyte = 255;
+            # Possibly more if is string with spaces, need to recombine those
+            if len(splitvals) > 5:
+                splitvals[4] = ' '.join(splitvals[4:])
+                del splitvals[5:]
+            name, value = splitvals[2], splitvals[4].strip('\n ;')
+            if name not in constants.keys():
+                raise KeyError(f"Expected {name} to be present")
+            constants[name] = value
+
+    # Write constants into nim file
+    with open(filename + '.nim', 'r+') as nimfile:
+        nim_lines = nimfile.readlines()
+
+        for idx, line in enumerate(nim_lines):
+            if line.startswith('var'):
+                split_line = line.split()
+                for const_name, const_val in constants.items():
+                    if const_name == split_line[1].strip('\n :*;'):
+                        typename = split_line[-1].strip('\n :*;')
+                        nim_lines[idx] = f"const {const_name}*: {typename} = {const_val}"
+                    else:
+                        continue
+
+        nimfile.writelines(nim_lines)
+
+    return constants
+
 def traceability(symbol):
     ''' Return a string with code-to-model traceability '''
     trace = ['### {line}'.format(line=l) for l in
@@ -250,29 +295,28 @@ def procedure_header(proc, SEPARATOR):
     return pi_header
 
 
-def generate_nim_definitions(procname: str, path: str):
-    if not os.path.isdir(path):
-        path = os.path.dirname(path)
-    # os.system(f'cp {path}/*.asn .')
+def generate_nim_definitions(procname: str, srcpath: str, outpath: str):
+    if not os.path.isdir(srcpath):
+        srcpath = os.path.dirname(srcpath)
+    srcpath = os.path.abspath(srcpath)
 
-    # files = list(os.listdir())
-    # for file in files:
-    #     if '-' in file:
-    #         os.rename(file, file.replace('-', '_'))
-
-    asn_files = [os.path.splitext(file)[0] for file in os.listdir() if os.path.splitext(file)[1] == '.asn']
+    if not os.path.isdir(outpath):
+        outpath = os.path.dirname(outpath)
+    outpath = os.path.abspath(outpath)
 
     import importlib.resources
     asn1crt = importlib.resources.path('sdl2nim', 'asn1crt.nim')
+    constextr = importlib.resources.path('sdl2nim', 'constextr.py')
     with asn1crt as filepath:
         asn1crt_path = str(filepath.absolute())
+    with constextr as filepath:
+        constextr_path = str(filepath.absolute())
 
     excluded_from_clean = [
         'config.nims',
-        f'{procname}_RI.c',
-        f'{procname}_RI.nim',
-        f'{procname}.nim',
-        f'{procname}_datamodel.asn'
+        '*_RI.*',
+        '*.pr',
+        'Makefile'
     ]
 
     excluded_from_clean = "! -name \'" + "\' ! -name \'".join(excluded_from_clean) + "'"
@@ -291,27 +335,27 @@ f"""
 # Tasks
 #
 task asn, "Generate ASN Files":
-    exec "cp {path}/*.asn ."
-    exec "find . -name '*asn' -exec bash -c ' mv $0 ${{0/-/_}}' {{}} \\\;"
-    exec "asn1scc --rename-policy 3 -typePrefix {settings.ASN1SCC} -o . -equal -c *.asn"
+    {f'exec "cp {srcpath}/*.asn ."' if srcpath != outpath else '# No need to copy files'}
+    exec "find . -name '*-*.asn' -exec bash -c ' mv $0 ${{0/-/_}}' {{}} \\\;"
+    exec "asn1scc --rename-policy 3 -typePrefix {settings.ASN1SCC} -o . -equal -c $(find . -name '*.asn' ! -name '*-*')"
+    exec "find . -name '*-*.asn' -exec bash -c ' rm -rf ${{0/-/_}}' {{}} \\\;"
   
 task filegen, "Generate Nim Files":
     asnTask()
     exec "cp {asn1crt_path} ."
+    {f'# exec "cp {srcpath}/*RI.c ."' if srcpath != outpath else '# No need to copy RI files'}
     exec "c2nim --importc $(find . -name '*h' -not -name 'asn1crt*')" 
+    exec "python3 {constextr_path} --dir {outpath}"
 
 task build, "Build Project":
     filegenTask()
-    exec "nim c {procname}.nim"
-    #exec "nim -c --nolinking:on --nimcache:. c {procname}.nim"
-    #exec "gcc -o {procname}_demo *.c -I {libdir}" 
+    exec "nim c --path:{srcpath} --path:{outpath} {procname}.nim"
+    # exec "nim -c --nolinking:on --nimcache:. c {procname}.nim"
+    # exec "gcc -o {procname}_demo *.c -I {libdir}" 
 
 task clean, "Clean Project Folder":
-    exec "find . {excluded_from_clean} -delete"
+    {f'exec "find . {excluded_from_clean} -delete"' if srcpath != outpath else 'echo "Create your own clean rules here"'}
 
-task deepclean, "Delete All except the RI file":
-    cleanTask()
-    exec "find . ! -name '{procname}_RI.c' -delete"
 
 task rebuild, "Clean & Build":
     cleanTask()
@@ -350,7 +394,7 @@ def format_nim_code(stmts):
                 indent = max(indent - 1, 0)
         if line:
             yield indent_pattern * indent + line
-        if elems and any([char in elems[-1] for char in ('=', ':')]) and "#" not in elems[0]:
+        if elems and "#" not in elems[0] and elems[-1].strip()[-1] in (':', '='):
             indent += 1
         if elems and elems[0] in ('case', 'else'):
             indent += 1
