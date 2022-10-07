@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument('-v', '--version', action='version',
                         version=__version__)
     parser.add_argument('--output-dir', dest='output_dir', action='store', type=str,
-                        metavar='path', default='.', help='set output directory (default .)')
+                        metavar='path', default='./nimout/', help='set output directory (default .)')
     parser.add_argument('--shared', action='store_true', default=False,
                         help='Generate getters/setters to access internal state')
     parser.add_argument('--taste', dest='taste_target', action='store_true',
@@ -39,8 +39,6 @@ def sdl2nim() -> int:
 
     LOG.setLevel(logging.INFO)
     options = parse_args()
-
-
 
     # parsing SDL/PR with opengeode
     try:

@@ -93,15 +93,17 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--dir', dest='dir', action='store', type=str,
-                        metavar='path', default=os.path.abspath('.'), help='set directory (default .)')
+                        default=os.path.abspath('.'), help='set directory (default .)')
     args = parser.parse_args()
     
     constants = []
-    
+    print(args.dir, glob.glob(f"{args.dir}/*.h"))
     for file in glob.glob(f"{args.dir}/*.h"):
         name, _ = os.path.splitext(file)
         if os.path.split(name)[-1] == 'asn1crt': continue
-        if all([f"{name}.{ext}" in glob.glob(f"{args.dir}/*.{ext}") for ext in ('c', 'nim')]):
+        lst = [f"{name}.{ext}" in glob.glob(f"{args.dir}/*.{ext}") for ext in ('c', 'nim')]
+        print(file, lst)
+        if all(lst):
             constants.extend(constant_extraction(name))
 
     if constants:

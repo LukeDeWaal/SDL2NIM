@@ -314,8 +314,10 @@ def generate_nim_definitions(procname: str, srcpath: str, outpath: str):
 
     excluded_from_clean = [
         'config.nims',
-        '*_RI.*',
+        f'{procname}.nim',
+        f'{procname}_RI.*',
         '*.pr',
+        f'{procname}_datamodel.asn',
         'Makefile'
     ]
 
@@ -343,15 +345,12 @@ task asn, "Generate ASN Files":
 task filegen, "Generate Nim Files":
     asnTask()
     exec "cp {asn1crt_path} ."
-    {f'# exec "cp {srcpath}/*RI.c ."' if srcpath != outpath else '# No need to copy RI files'}
     exec "c2nim --importc $(find . -name '*h' -not -name 'asn1crt*')" 
     exec "python3 {constextr_path} --dir {outpath}"
 
 task build, "Build Project":
     filegenTask()
-    exec "nim c --path:{srcpath} --path:{outpath} {procname}.nim"
-    # exec "nim -c --nolinking:on --nimcache:. c {procname}.nim"
-    # exec "gcc -o {procname}_demo *.c -I {libdir}" 
+    exec "nim c -d:release --path:{srcpath} --path:{outpath} {procname}.nim"
 
 task clean, "Clean Project Folder":
     {f'exec "find . {excluded_from_clean} -delete"' if srcpath != outpath else 'echo "Create your own clean rules here"'}
