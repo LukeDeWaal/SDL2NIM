@@ -169,7 +169,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
-
+    output_dir = os.path.abspath(output_dir)
     os.chdir(output_dir)
 
     if not stop_condition:
@@ -1056,7 +1056,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         process_instance.cs_mapping = process.cs_mapping
         generate(process_instance, simu, instance=True, taste=taste)
 
-    generate_nim_definitions(process.name, process.filename, options['output_dir'])
+    generate_nim_definitions(process.name, process.filename, output_dir)
 
     os.chdir(cwd)
 
