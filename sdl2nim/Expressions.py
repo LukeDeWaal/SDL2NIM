@@ -225,8 +225,86 @@ def _prim_call(prim, **kwargs):
 
         nim_string = f"{operands[0]}.{settings.ASN1SCC}{enum_type}"
 
-    elif func in ('observer_status', 'to_selector',
-                  'to_enum', 'choice_to_int',):
+    elif func == 'choice_to_int':
+        p1, p2 = params
+        sort = find_basic_type(p1.exprType)
+        assert (sort.kind == 'ChoiceType')  # normally checked by the parser
+        param_stmts, varstr, local_var = expression(p1, readonly=1)
+        stmts.extend(param_stmts)
+        local_decl.extend(local_var)
+        param_stmts, defaultstr, local_var = expression(p2, readonly=1)
+        stmts.extend(param_stmts)
+        local_decl.extend(local_var)
+        local_decl.append(f'var tmp{prim.tmpVar}: {settings.ASN1SCC}Sint')
+        choices = [f'case {varstr}.kind:']
+        # all choice elements must be either signed or unsigned
+        # a mix would result in inconsistencies
+        # therefore we have to cast to signed as if there is at least one
+        # signed element (with the risk of cutting very big values)
+        has_unsigned = False
+        has_signed = False
+        for each in sort.Children.values():
+            child_sort = find_basic_type(each.type)
+            if child_sort.kind.startswith('Integer'):
+                if float(child_sort.Min) < 0.0:
+                    has_signed = True
+                else:
+                    has_unsigned = True
+
+        base = type_name(p1.exprType)
+        need_cast = has_signed and has_unsigned
+        for child_name, descr in sort.Children.items():
+            child_name_nim = child_name.replace('-', '_')
+            child_id = descr.EnumID
+            child_sort = find_basic_type(descr.type)
+            if not child_sort.kind.startswith('Integer'):
+                continue
+            set_value = f'{varstr}.u.{child_name_nim}'
+            if need_cast and float(child_sort.Min) >= 0.0:
+                set_value = f'{settings.ASN1SCC}Sint({set_value})'
+            choices.extend([f'of {base}_{child_id}:', f'tmp{prim.tmpVar} = {set_value}'])
+
+        choices.extend([f'else:', f'tmp{prim.tmpVar} = {defaultstr}', '# end case'])
+        stmts.extend(choices)
+        nim_string += f'tmp{prim.tmpVar}'
+
+    elif func in ('to_enum', 'to_selector'):
+        variable, target_type = params
+        var_typename = type_name (variable.exprType)
+
+        if func == 'to_enum':
+            assert var_typename.endswith('selection')
+            var_typename = var_typename.split('_')[0]
+
+        var_bty = find_basic_type(variable.exprType)
+        var_stmts, var_str, var_decl = expression (variable, readonly=1)
+        stmts.extend(var_stmts)
+        local_decl.extend(var_decl)
+        destSort = target_type.value[0].replace('-','_')
+        nim_typename = f"{settings.ASN1SCC}{destSort}"
+        local_decl.append(f'var tmp{prim.tmpVar}: {nim_typename}')
+        try:
+            nimtype = settings.TYPES[destSort.replace('_', '-')].type
+            if func == 'to_enum':
+                assert nimtype.EnumValues.keys() == var_bty.EnumValues.keys()
+            elif func == 'to_selector':
+                assert nimtype.Children.keys() == var_bty.EnumValues.keys()
+        except (KeyError, AttributeError, TypeError, AssertionError) as err:
+            raise TypeError(f"{str(err)} - PrimCall: '{prim.inputString}' (please report this bug)")
+
+        stmts.extend([f'case {var_str}:'])
+        for child_name, descr in var_bty.EnumValues.items():
+            child_name_nim = child_name.replace('-', '_')
+            child_id = descr.EnumID
+
+            set_value = f'{nim_typename}_{child_name_nim}'
+
+            stmts.extend([f'of {var_typename}_{child_id}:', f'tmp{prim.tmpVar} = {set_value}'])
+
+        stmts.extend([f'else:', f'tmp{prim.tmpVar} = nil', '# end case'])
+        nim_string = f'tmp{prim.tmpVar}'
+
+    elif func in ('observer_status',):
         # TODO
         pass
 
@@ -286,7 +364,7 @@ def _prim_substring(prim, **kwargs):
     # SDL starts indexes at 0, ASN1 Nim types at 0
     # SDL ends at final - 1, Nim at final, thus change range from .. to ..<
     if str.isnumeric(r1_string):
-        r1_string = str(int(r1_string) - 1)
+        r1_string = str(int(r1_string))
     else:
         r1_string = f"({r1_string}).asn1SccUint"
     if str.isnumeric(r2_string):
@@ -329,7 +407,7 @@ def _prim_selector(prim, **kwargs):
     receiver_bty = find_basic_type(receiver.exprType)
 
     if receiver_bty.kind == 'ChoiceType':
-        nim_string = f'{nim_string}.{field_name}'
+        nim_string = f'{nim_string}.u.{field_name}'
     else:
         # SEQUENCE, check for field optionality first
         child = child_spelling(field_name, receiver_bty)
@@ -611,6 +689,9 @@ def _assign_expression(expr, **kwargs):
                     f"{left_str}.arr[0 ..< {len(content.split(','))}] = ({content})"])
             rlen = None
 
+        elif isinstance(expr.right, ogAST.PrimEmptyString):
+            strings.append(f"{left_str} = {type_name(expr.right.exprType)}()")
+            rlen = None
         else:
             # Right part is a variable
             strings.append(f"{left_str} = {right_str}")
@@ -651,8 +732,9 @@ def _assign_expression(expr, **kwargs):
         # No direct assignment, only assigning members separately
         # First we assign empty object (to zero all memory)
         # Then the member assignments happen
-        code = [f"{left_str} = {right_str}"] + code
-        right_stmts = [rstmt % left_str for rstmt in right_stmts]
+        if right_str:
+            code = [f"{left_str} = {right_str}"] + code
+        right_stmts = [rstmt % left_str if '%' in rstmt else rstmt for rstmt in right_stmts]
 
     else:
         strings.append(f"{left_str} = {right_str}")
@@ -932,22 +1014,38 @@ def _expr_in(expr, **kwargs):
     local_decl.extend(left_local)
     local_decl.extend(right_local)
 
-    stmts.extend(left_stmts)
-    stmts.extend(right_stmts)
-
     lbty = find_basic_type(expr.left.exprType)
     rbty = find_basic_type(expr.right.exprType)
 
     # it is possible to test against a raw sequence of: x in { 1,2,3 }
     # in that case we create an array on the type of x, and we test
-    # presence using the form "for some Value of tmpXXX => x = Value"
+    # presence using the form "x in array[N,type_x]"
     if isinstance(expr.left, ogAST.PrimSequenceOf):
         sort = type_name(expr.right.exprType)
         size = expr.left.exprType.Max
 
-        local_decl.append(f'const tmp{expr.tmpVar} : array[ {size} , {sort} ] = ({left_str})')
-        nim_string = f'(for loopvar{expr.tmpVar} of tmp{expr.tmpVar} => var = {right_str})'
+        if isinstance(expr.left.value[0], ogAST.PrimSequence):
+            local_decl.append(f'var tmp{expr.tmpVar} : array[ {size} , {sort} ] = [{left_str}]')
+            c = 0
+            for idx, val in enumerate(expr.left.value):
+                sz = len(val.value.keys())
+                for i in range(sz):
+                    left_stmts[c] = left_stmts[c] % f"tmp{expr.tmpVar}[{idx}]"
+                    c += 1
+            nim_string = f"({right_str} in tmp{expr.tmpVar})"
+        else:
+
+            arr = array_content(expr.left, left_str, lbty)
+            nim_string = f'( {right_str} in {arr} )'
+            # local_decl.append(f'const tmp{expr.tmpVar} : array[ {size} , {sort} ] = [{left_str}]')
+
+        stmts.extend(left_stmts)
+        stmts.extend(right_stmts)
+
     else:
+
+        stmts.extend(left_stmts)
+        stmts.extend(right_stmts)
 
         if lbty.kind.startswith('SequenceOf'):
             nim_string = f'{right_str} in {left_str}.arr'
@@ -1184,6 +1282,7 @@ def _sequence(seq, **kwargs):
 
     sep = ''
     type_children = find_basic_type(seq.exprType).Children
+    type_children = {k.replace("-","_") : v for k,v in type_children.items()}
     optional_fields = {field.lower(): {'present': False,
                                        'ref': (field, val)}
                        for field, val in type_children.items()
@@ -1200,6 +1299,7 @@ def _sequence(seq, **kwargs):
 
         if elem_spec is None:
             raise ValueError("Error")
+
         elem_specty = elem_spec.type
 
         # Find the basic type of the elem: if it is a number and the value
@@ -1291,6 +1391,7 @@ def _choiceitem(choice, **kwargs):
     stmts, choice_str, local_decl = expression(choice.value['value'],
                                                readonly=1)
 
+    chbty = find_basic_type(choice.exprType)
     bty = find_basic_type(choice.value['value'].exprType)
 
     if isinstance(choice.value['value'], (ogAST.PrimSequenceOf,
@@ -1299,6 +1400,15 @@ def _choiceitem(choice, **kwargs):
             choice_str = choice.value['value'].numeric_value
         else:
             choice_str = array_content(choice.value['value'], choice_str, bty)
+
+    elif isinstance(choice.value['value'], ogAST.PrimEmptyString):
+        choice_str = f"{type_name(choice.value['value'].exprType)}()"
+
+    elif isinstance(choice.value['value'], ogAST.PrimSequence):
+        choice_name = choice.value['choice']
+        stmts = [stmt % f"%s.u.{choice_name}" if '%' in stmt else stmt for stmt in stmts]
+        stmts = [f"%s.u.{choice_name} = {choice_str}"] + stmts + [f"%s.kind = {type_name(choice.exprType)}_{chbty.Children[choice_name].EnumID}"]
+        return stmts, '', local_decl
 
     # look for the right spelling of the choice discriminant
     # (normally field_PRESENT, but can be prefixed by the type name if there

@@ -201,7 +201,8 @@ def array_content(prim, values, asnty, expression: callable):
             return values
     else:
         try:
-            split_vals = [f"{s}.{type_name(asnty.type)}" for s in split_vals]
+            T = type_name(asnty.type)
+            split_vals = [f"{s}.{T}" if T != settings.ASN1SCC else s for s in split_vals]
         except AttributeError:
             pass
     # split_vals[0] = first_val
@@ -398,6 +399,8 @@ def format_nim_code(stmts):
         if elems and elems[0] in ('case', 'else'):
             indent += 1
         if elems and elems[0] in ('return',):
+            indent = max(indent - 1, 0)
+        if elems and elems[0] in ('pass', ) and not format_nim_code.prev.startswith(('if', 'elif', 'else', 'label',)):
             indent = max(indent - 1, 0)
         if not elems:  # newline -> decrease indent
             indent = max(indent - 1, 0)

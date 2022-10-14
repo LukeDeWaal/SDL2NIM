@@ -241,6 +241,9 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 varbty = find_basic_type(var_type)
                 variable_type = type_name(var_type)
 
+                if isinstance(def_value, ogAST.PrimEmptyString):
+                    continue
+
                 if (varbty.kind.startswith('Integer') or varbty.kind.startswith(f'{settings.ASN1SCC}Sint')) and \
                         isinstance(def_value, (ogAST.PrimOctetStringLiteral,
                                                ogAST.PrimBitStringLiteral)):
@@ -275,9 +278,10 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                     pass
 
                 if isinstance(def_value, (ogAST.PrimChoiceItem, ogAST.PrimSequence)):
+
                     if dst:  # Hacky way to initialize anonymous Choice types
-                        if "%" in dst[0]:
-                            post_actions.append(dst[0] % (settings.LPREFIX + "." + var_name))
+                        while dst and "%" in dst[0]:
+                            post_actions.append(dst.pop(0) % (settings.LPREFIX + "." + var_name))
                         dst = []
 
                 assert not dst and not dlocal, \
@@ -396,12 +400,16 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             f'    {process.name}_RI'
 
     # Import Std Modules
-    std_modules = 'import\n    ' + ',\n    '.join(["std/math", "std/random", "std/bitops"]) # Add Other Libraries here # TODO
+    std_modules = 'import\n    ' + ',\n    '.join(["std/math", "std/random", "std/bitops", "std/strutils"]) # Add Other Libraries here # TODO
     std_modules += "\n"
 
     taste_template = []
-    template_str = '' \
-                   "\n\n\n### ------ IMPLEMENTATION ------ ###\n\n"
+    template_str = f'\n\n\n### ------ IMPLEMENTATION ------ ###\n\n'
+
+    for asnfile in process.DV.asn1Files:
+        cfile = asnfile.replace("-","_").replace(".asn", ".c")
+        template_str += '\n{.compile: "%s"}\n' % cfile
+
 
     taste_template.append(template_str)
 
@@ -435,7 +443,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         f'### Generated on: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}\n'
         '\n'
         f'{std_modules}\n{asn1_modules}\n{ri_modules}\n'
-        "\n\n### ------ DECLARATION ------ ###\n\n\n{.compile: \"dataview_uniq.c\"}\n\n"]
+        "\n\n### ------ DECLARATION ------ ###\n\n"]
 
     ri_stub_decl = [
         '### This file is a stub for the implementation of the required interfaces',
@@ -757,7 +765,12 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 nim_decl_template.append(f'###  Synchronous Required Interface "{sig}"')
                 nim_decl_template.append(f'const {procname}* = {process.name}_RI.{sig}')
             # ri_stub_decl.append(f'proc {sig}*{params_spec}')
-            ri_stub_src.extend(['{.compile: "%s_RI.c" }' % process.name, f'proc {sig}*{params_spec} ' + '{.importc: "%s_RI_%s".}' % (process.name, sig)])
+            ri_stub_src.extend([f'when "{process.name}_RI.c" in splitLines(staticExec("ls *.c")):',
+                                '{.compile: "%s_RI.c" }' % process.name,
+                                f'static: echo "\e[32mFound {process.name}_RI.c \e[0m"',
+                                'else:', fr'static: echo "\e[31mCannot find {process.name}_RI.c\e[0m"',
+                                '# end try/catch',
+                                f'proc {sig}*{params_spec} ' + '{.importc: "%s_RI_%s".}' % (process.name, sig)])
 
     # for the .ads file, generate the declaration of timers set/reset functions
     for timer in process.timers:
@@ -1816,8 +1829,8 @@ def _inner_procedure(proc, **kwargs):
                 elif varbty.kind == 'IA5StringType':
                     dstr = ia5string_raw(def_value)
                 assert not dst and not dlocal, 'Ground expression error'
-            default = f' := {dstr}' if def_value else ''
-            code.append(f'{var_name} : {typename}{default}')
+            default = f' = {dstr}' if def_value else ''
+            code.append(f'var {var_name} : {typename}{default}')
 
         # Look for labels in the diagram and transform them in floating labels
         Helper.inner_labels_to_floating(proc)
