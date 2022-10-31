@@ -211,7 +211,30 @@ def _prim_call(prim, **kwargs):
         stmts.extend(param_stmts)
         local_decl.extend(local_var)
 
-        nim_string += f"{param_str}.kind"
+        base_type = type_name(exp.exprType, use_prefix=False) # type_name(prim.exprType, use_prefix=False)
+        selection_type = type_name(prim.exprType, use_prefix=False)
+        if not selection_type:
+            # Hacky way to find proper type when type cannot easily be deduced by parser, eg in decision
+            for k, v in settings.TYPES.items():
+                if prim.exprType == v.type:
+                    selection_type = k.replace("-","_")
+                    break
+
+        bty = find_basic_type(prim.exprType)
+        local_decl.append(f"var tmp{prim.tmpVar}: {settings.ASN1SCC}{settings.PROCESS_NAME}_{selection_type}")
+        stmts.extend([
+            f"case {param_str}.kind:",
+        ])
+        for k, v in bty.EnumValues.items():
+            stmts.extend([
+                f"of {base_type}_{v.EnumID}:",
+                f"tmp{prim.tmpVar} = {settings.PROCESS_NAME.capitalize()}_{selection_type}_{v.EnumID}"
+            ])
+        stmts.extend([
+            "else:", stmts[-1], "# end case"
+        ])
+
+        nim_string += f"tmp{prim.tmpVar}"
 
     elif func == 'val':
         operands = [None, None]
@@ -251,7 +274,7 @@ def _prim_call(prim, **kwargs):
                 else:
                     has_unsigned = True
 
-        base = type_name(p1.exprType)
+        base = type_name(p1.exprType, use_prefix=False)
         need_cast = has_signed and has_unsigned
         for child_name, descr in sort.Children.items():
             child_name_nim = child_name.replace('-', '_')
@@ -270,11 +293,7 @@ def _prim_call(prim, **kwargs):
 
     elif func in ('to_enum', 'to_selector'):
         variable, target_type = params
-        var_typename = type_name (variable.exprType)
-
-        if func == 'to_enum':
-            assert var_typename.endswith('selection')
-            var_typename = var_typename.split('_')[0]
+        var_typename = type_name (variable.exprType, use_prefix=False)
 
         var_bty = find_basic_type(variable.exprType)
         var_stmts, var_str, var_decl = expression (variable, readonly=1)
@@ -282,7 +301,13 @@ def _prim_call(prim, **kwargs):
         local_decl.extend(var_decl)
         destSort = target_type.value[0].replace('-','_')
         nim_typename = f"{settings.ASN1SCC}{destSort}"
-        local_decl.append(f'var tmp{prim.tmpVar}: {nim_typename}')
+
+        if func == 'to_enum':
+            assert var_typename.endswith('selection')
+            local_decl.append(f'var tmp{prim.tmpVar}: {nim_typename}')
+        elif func == 'to_selector':
+            local_decl.append(f'var tmp{prim.tmpVar}: {settings.ASN1SCC}{settings.PROCESS_NAME}_{destSort}_selection')
+
         try:
             nimtype = settings.TYPES[destSort.replace('_', '-')].type
             if func == 'to_enum':
@@ -297,11 +322,14 @@ def _prim_call(prim, **kwargs):
             child_name_nim = child_name.replace('-', '_')
             child_id = descr.EnumID
 
-            set_value = f'{nim_typename}_{child_name_nim}'
+            if func == 'to_enum':
+                set_value = f'{nim_typename}_{child_name_nim}'
+                stmts.extend([f'of {settings.PROCESS_NAME.capitalize()}_{var_typename}_{child_id}:', f'tmp{prim.tmpVar} = {set_value}'])
+            elif func == 'to_selector':
+                set_value = f'{settings.PROCESS_NAME}_{destSort}_selection_{child_name_nim}_present'.capitalize()
+                stmts.extend([f'of {var_typename}_{child_id}:', f'tmp{prim.tmpVar} = {set_value}'])
 
-            stmts.extend([f'of {var_typename}_{child_id}:', f'tmp{prim.tmpVar} = {set_value}'])
-
-        stmts.extend([f'else:', f'tmp{prim.tmpVar} = nil', '# end case'])
+        stmts.extend([f'else:', stmts[-1], '# end case'])
         nim_string = f'tmp{prim.tmpVar}'
 
     elif func in ('observer_status',):
@@ -311,7 +339,38 @@ def _prim_call(prim, **kwargs):
     else:
         # inner procedure call (with a RETURN statement)
         # TODO
-        pass
+        # retrieve the procedure signature
+        p, = [p for p in settings.PROCEDURES if p.inputString.lower() == func.lower()]
+
+        # for inner procedures we do not use a temporary variable because
+        # we remain in Ada and therefore in parameters do not need to
+        # be pointers (in out).
+        nim_string += f'p{settings.SEPARATOR}{func}('
+        # Take all params and join them with commas
+        list_of_params = []
+        for idx, param in enumerate(params):
+            # Expected basic type of the parameter
+            param_type = p.fpar[idx]['type']
+            basic_param = find_basic_type(param_type)
+
+            param_stmt, param_str, local_var = expression(param, readonly=1)
+
+            # We need to format strings properly, this depends on the expected
+            # type of the procedure parameter
+            if isinstance(param,
+                          (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
+                if basic_param.kind == 'IA5StringType':
+                    param_str = ia5string_raw(param)
+                elif basic_param.kind.startswith('Integer'):
+                    param_str = str(param.numeric_value)
+                else:
+                    param_str = array_content(param, param_str, basic_param)
+
+            list_of_params.append(param_str)
+            stmts.extend(param_stmt)
+            local_decl.extend(local_var)
+        nim_string += ', '.join(list_of_params)
+        nim_string += ')'
 
     return stmts, str(nim_string), local_decl
 
@@ -391,7 +450,7 @@ def _prim_substring(prim, **kwargs):
 @expression.register(ogAST.PrimSelector)
 def _prim_selector(prim, **kwargs):
     ''' Selector (field access with '!' or '.' separation) '''
-    stmts, ada_string, local_decl = [], '', []
+    stmts, nim_string, local_decl = [], '', []
     ro = kwargs.get("readonly", 0)
 
     receiver = prim.value[0]  # can be a PrimSelector
@@ -399,7 +458,6 @@ def _prim_selector(prim, **kwargs):
 
     receiver_stms, receiver_string, receiver_decl = expression(receiver,
                                                                readonly=ro)
-
     nim_string = receiver_string
     stmts.extend(receiver_stms)
     local_decl.extend(receiver_decl)
@@ -590,6 +648,10 @@ def _equality(expr, **kwargs):
                     elif kind.startswith('Octet'):
                         right_str = ', '.join([f"{s}.byte" for s in right_str.split(', ')])
 
+                elif lbty.kind == 'OctetStringType':
+                    left_str = f"{left_str}.arr"
+                    right_str = ', '.join([f"{s}.byte" for s in right_str.split(', ')])
+
                 nim_string = f"{left_str}[0 ..< {len(right_str.split(','))}] {operand} [{right_str}]"
             else:
                 # Hacky Way of determining cast to char or byte
@@ -621,6 +683,12 @@ def _assign_expression(expr, **kwargs):
     basic_left = find_basic_type(expr.left.exprType)
     basic_right = find_basic_type(expr.right.exprType)
 
+    if isinstance(expr.left, ogAST.PrimFPAR):
+        left_str = f"{left_str}[]"
+
+    if isinstance(expr.right, ogAST.PrimFPAR):
+        right_str = f"{right_str}[]"
+
     if (basic_left.kind == 'IA5StringType') and isinstance(expr.right, ogAST.PrimStringLiteral):
         # TODO
         pass
@@ -633,7 +701,11 @@ def _assign_expression(expr, **kwargs):
             if not isinstance(expr.left, ogAST.PrimSubstring):
                 # only if left is not a substring, otherwise syntax
                 # would be wrong due to result of _prim_substring
-                strings.append(f"{left_str}.arr[0 ..< {right_str}.len] = {right_str}")
+                if basic_left.kind == basic_right.kind == 'OctetStringType':
+                    strings.append(f"{left_str} = {right_str}")
+                    rlen = ''
+                else:
+                    strings.append(f"{left_str}.arr[0 ..< {right_str}.len] = {right_str}")
             else:
                 # left is substring: no length, direct assignment
                 rlen = ""
@@ -986,18 +1058,36 @@ def _append(expr, **kwargs):
         local_decl.extend([
             f"var tmp{expr.tmpVar}: {name_of_type}"
         ])
-        if right_self_standing:
+        if right_self_standing and not isinstance(expr.left, ogAST.ExprAppend):
+            if isinstance(expr.left, ogAST.PrimStringLiteral):
+                val = expr.left.value.strip("'\"")
+            else:
+                val = expr.left.value
             stmts.extend([
-                f"tmp{expr.tmpVar}.nCount = {len(expr.left.value)}.cint",
-                f"tmp{expr.tmpVar}.arr[0 ..< {len(expr.left.value)}] = {left_arr}",
+                f"tmp{expr.tmpVar}.nCount = {len(val)}.cint",
+                f"tmp{expr.tmpVar}.arr[0 ..< {len(val)}] = {left_arr}",
             ])
             nim_string = f"(tmp{expr.tmpVar} // {right_str}).arr[0 ..< tmp{expr.tmpVar}.nCount + {right_str}.nCount]"
-        else:
+
+        elif left_self_standing and not isinstance(expr.right, ogAST.ExprAppend):
+            if isinstance(expr.right, ogAST.PrimStringLiteral):
+                val = expr.right.value.strip("'\"")
+            else:
+                val = expr.right.value
             stmts.extend([
-                f"tmp{expr.tmpVar}.nCount = {len(expr.right.value)}.cint",
-                f"tmp{expr.tmpVar}.arr[0 ..< {len(expr.right.value)}] = {right_arr}",
+                f"tmp{expr.tmpVar}.nCount = {len(val)}.cint",
+                f"tmp{expr.tmpVar}.arr[0 ..< {len(val)}] = {right_arr}",
             ])
             nim_string = f"({left_str} // tmp{expr.tmpVar}).arr[0 ..< {left_str}.nCount + tmp{expr.tmpVar}.nCount]"
+
+        else:
+            if isinstance(expr.left, ogAST.ExprAppend):
+                left_str = left_str.split(".arr")[0]
+            elif isinstance(expr.right, ogAST.ExprAppend):
+                right_str = right_str.split(".arr")[0]
+            else:
+                raise TypeError("Unexpected Input")
+            nim_string = f"({left_str} // {right_str}).arr[0 ..< {append_size(expr)}]"
 
     return stmts, str(nim_string), local_decl
 
@@ -1090,12 +1180,12 @@ def _enumerated_value(primary, **kwargs):
     prefix = type_name(basic, use_prefix=use_prefix)
 
     if 'selection' in str(primary.exprType):
-        string_hack = str(primary.exprType).split()[-1].strip(" \n<>\'\"").replace("-", "_").split('.')[
-            -1].lower().capitalize().split('_selection')[0]
+        string_hack = str(primary.exprType).split()[-1].strip(" \n<>\'\"").replace("-", "_").split('.')[-1].lower().capitalize().split('_selection')[0]
+        nim_string = f"{settings.PROCESS_NAME.capitalize()}_{string_hack}_selection_{enumerant}_present"
     else:
         string_hack = str(primary.exprType.ReferencedTypeName).replace("-", "_")
-
-    nim_string = (prefix + string_hack + "_" + basic.EnumValues[each].EnumID)  # TODO: Doesn't put right enum name
+        nim_string = (prefix + string_hack + "_" + basic.EnumValues[each].EnumID)
+    # TODO: Doesn't put right enum name
 
     return [], str(nim_string), []
 
@@ -1275,7 +1365,7 @@ def _conditional(cond, **kwargs):
 def _sequence(seq, **kwargs):
     stmts, local_decl = [], []
     try:
-        nim_string = f"{type_name(seq.exprType)}()"
+        nim_string = f"{type_name(seq.exprType)}("
     except NotImplementedError as err:
         err = f"!!YOU FOUND A BUG!! - The type of this record is undefined: {seq.inputString}"
         raise TypeError(str(err).replace('\n', ''))
@@ -1289,6 +1379,7 @@ def _sequence(seq, **kwargs):
                        if val.Optional == 'True'}
     present_fields = []
     absent_fields = []
+    counter, ceil = 0, len(seq.value)
     for elem, value in seq.value.items():
         # Set the type of the field - easy thanks to ASN.1 flattened AST
         elem_spec = None
@@ -1296,8 +1387,7 @@ def _sequence(seq, **kwargs):
             if each.lower() == elem.lower():
                 elem_spec = type_children[each]
                 break
-
-        if elem_spec is None:
+        else:
             raise ValueError("Error")
 
         elem_specty = elem_spec.type
@@ -1308,8 +1398,8 @@ def _sequence(seq, **kwargs):
 
         value_stmts, value_str, local_var = expression(value, readonly=1)
 
-        if isinstance(value, ogAST.PrimSequence):
-            value_stmts = [v % f"%s.{elem.lower()}" for v in value_stmts]
+        # if isinstance(value, ogAST.PrimSequence):
+        #     value_stmts = [v % f"%s.{elem.lower()}" for v in value_stmts]
 
         if isinstance(value, (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
             if elem_bty.kind.startswith('Integer'):
@@ -1324,8 +1414,10 @@ def _sequence(seq, **kwargs):
             optional_fields[elem.lower()]['present'] = True
         sep = ', '
         stmts.extend(value_stmts)
-        stmts = [f"%s.{elem.lower()} = {value_str}"] + stmts
+        #stmts = [f"%s.{elem.lower()} = {value_str}"] + stmts
+        nim_string += f"{elem.lower()}: {value_str}" + (counter < ceil - 1)*", "
         local_decl.extend(local_var)
+        counter += 1
     # Process optional fields
     if optional_fields:
         present_fields = list((fd_name, fd_data['ref'])
@@ -1335,6 +1427,7 @@ def _sequence(seq, **kwargs):
     stmts.extend([
         f"%s.exist.{varname} = 1" for varname, _dat in present_fields
     ])
+    nim_string += ')'
     return stmts, str(nim_string), local_decl
 
 
@@ -1406,9 +1499,10 @@ def _choiceitem(choice, **kwargs):
 
     elif isinstance(choice.value['value'], ogAST.PrimSequence):
         choice_name = choice.value['choice']
-        stmts = [stmt % f"%s.u.{choice_name}" if '%' in stmt else stmt for stmt in stmts]
-        stmts = [f"%s.u.{choice_name} = {choice_str}"] + stmts + [f"%s.kind = {type_name(choice.exprType)}_{chbty.Children[choice_name].EnumID}"]
-        return stmts, '', local_decl
+        T = type_name(choice.exprType)
+        nim_string = f"{T}(u: {T}_unchecked_union({choice_name}: {choice_str}), " \
+                     f"kind: {type_name(choice.exprType, use_prefix=False)}_{chbty.Children[choice_name].EnumID})"
+        return stmts, nim_string, local_decl
 
     # look for the right spelling of the choice discriminant
     # (normally field_PRESENT, but can be prefixed by the type name if there
@@ -1419,14 +1513,15 @@ def _choiceitem(choice, **kwargs):
     for each in basic.Children:
         curr_choice = each.lower().replace('-', '_')
         if curr_choice == search:
-            prefix = f"{type_name(choice.exprType)}_{basic.Children[each].EnumID}"
+            prefix = f"{type_name(choice.exprType, use_prefix=False)}_{basic.Children[each].EnumID}"
             break
-    nim_string = f'{type_name(choice.exprType)}(kind: {type_name(choice.exprType)}_selection.{prefix})'  # , u: {choice_str})'
+    nim_string = f'{type_name(choice.exprType)}(kind: {prefix}, ' \
+                 f'u: {type_name(choice.exprType)}_unchecked_union({choice.value["choice"]}: {choice_str}))'  # , u: {choice_str})'
 
     # Unsure if field is always called u
     # Union is anonymous in C, we dont know the typename in Nim
     # Hacky way to not have to initialize object specifically by adding statement after context init
-    stmts.append(f"%s.u.{choice.value['choice']} = {choice_str}")
+    # stmts.append(f"%s.u.{choice.value['choice']} = {choice_str}")
     return stmts, str(nim_string), local_decl
 
 

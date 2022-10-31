@@ -113,7 +113,7 @@ def type_name(a_type, use_prefix=True, prefix=settings.ASN1SCC):
         else:
             return (a_type.ReferencedTypeName).replace('-', '_')
     elif a_type.kind == 'BooleanType':
-        return 'bool'
+        return 'flag'
     elif a_type.kind.startswith('Integer32'):
         return 'asn1SccSint32'
     elif a_type.kind.startswith('IntegerU8'):
@@ -169,20 +169,9 @@ def array_content(prim, values, asnty, expression: callable):
     asnty is the reference type of the string literal '''
     if isinstance(prim, ogAST.PrimEmptyString):
         return values
-    # if asnty.Min != asnty.Max:
-    #
-    #     if isinstance(prim, ogAST.PrimStringLiteral):
-    #         # Quotes are kept in string literals
-    #         length = len(prim.value) - 2
-    #     elif isinstance(prim, ogAST.PrimOctetStringLiteral):
-    #         length = len(prim.hexstring)
-    #     else:
-    #         length = len(prim.value)
-    #
-    #     # Reference type can vary -> there is a Length field
-    #     rlen = f", nCount: {length}"
-    # else:
-    #     rlen = ""
+
+    if hasattr(prim, 'expected_type') and prim.exprType != prim.expected_type:
+        asnty = __find_basic_type(settings.TYPES, prim.expected_type)
 
     split_vals = values.split(', ')
     # first_val = split_vals[0]
@@ -211,8 +200,10 @@ def array_content(prim, values, asnty, expression: callable):
 
 def child_spelling(name, bty):
     ''' Return the index in Children with the proper spelling (case, dash) '''
-    if name in bty.Children:
-        return name
+    tmp = name.replace("-","_").lower()
+    for c in bty.Children:
+        if tmp == c.replace("-","_").lower() and name[0] == c[0]:
+            return c
     raise TypeError(f'Child not found: {name}')
 
 
@@ -271,7 +262,7 @@ def external_ri_list(process, SEPARATOR, ASN1SCC):
 
 def procedure_header(proc, SEPARATOR):
     ''' Build the prototype of a procedure '''
-    ret_type = type_name(proc.return_type) if proc.return_type else None
+    # ret_type = type_name(proc.return_type) if proc.return_type else None
     kind = 'proc' # if not proc.return_type else 'func'
     sep = f'p{SEPARATOR}' if not proc.exported else ''
     proc_name = proc.inputString
@@ -281,18 +272,15 @@ def procedure_header(proc, SEPARATOR):
         params = []
         for fpar in proc.fpar:
             typename = type_name(fpar['type'])
-            if fpar.get('direction') == 'in':
-                params.append('{name}: {ptype}'.format(
-                        name=fpar.get('name'),
-                        ptype=typename))
+            params.append('{name}: ptr {ptype}'.format(
+                    name=fpar.get('name'),
+                    ptype=typename))
         pi_header += ','.join(params)
         pi_header += '):'
     else:
         pi_header += '():'
-    if ret_type:
-        pi_header += f' {ret_type}'
-    else:
-        pi_header += ' void'
+
+    pi_header += ' void'
     return pi_header
 
 
@@ -326,6 +314,7 @@ def generate_nim_definitions(procname: str, srcpath: str, outpath: str):
 
     libdir = "~/.choosenim/toolchains/nim-*/lib/" # TODO: Specify specific nim version to use
 
+    # TODO : Fix asn1scc path
     filestr = \
 f"""
 #
@@ -340,13 +329,13 @@ f"""
 task asn, "Generate ASN Files":
     {f'exec "cp {srcpath}/*.asn ."' if srcpath != outpath else '# No need to copy files'}
     exec "find . -name '*-*.asn' -exec bash -c ' mv $0 ${{0/-/_}}' {{}} \\\;"
-    exec "asn1scc --rename-policy 3 -typePrefix {settings.ASN1SCC} -o . -equal -c $(find . -name '*.asn' ! -name '*-*')"
+    exec "/home/taste/Desktop/tmp_asn/publish/asn1scc --rename-policy 3 -typePrefix {settings.ASN1SCC} -o . -equal -c $(find . -name '*.asn' ! -name '*-*')" 
     exec "find . -name '*-*.asn' -exec bash -c ' rm -rf ${{0/-/_}}' {{}} \\\;"
   
 task filegen, "Generate Nim Files":
     asnTask()
     exec "cp {asn1crt_path} ."
-    exec "c2nim --importc $(find . -name '*h' -not -name 'asn1crt*')" 
+    exec "c2nim --importc $(find . -name '*h' -not -name 'asn1crt*') > /dev/null" 
     exec "python3 {constextr_path} --dir {outpath}"
 
 task build, "Build Project":
@@ -382,13 +371,13 @@ def format_nim_code(stmts):
     for line in stmts[:-1]:
         elems = line.strip().split()
         if elems and elems[0].startswith('label'):
-            if format_nim_code.prev.startswith('# end label'):
+            if format_nim_code.prev.startswith('# end') or format_nim_code.prev.startswith('###'):
                 indent = indent
             else:
                 indent = max(indent - 1, 0)
         if elems and elems[0].startswith(('elif', 'else', 'of')):
             indent = max(indent - 1, 0)
-        if elems and elems[0] == '#' and 'end' in elems[1] and not format_nim_code.prev.startswith('# end label'):
+        if elems and elems[0] == '#' and 'end' in elems[1] and not format_nim_code.prev.startswith(('# end label', 'return')):
             indent = max(indent - 1, 0)
             if 'case' in elems[-1]:
                 indent = max(indent - 1, 0)
@@ -400,7 +389,7 @@ def format_nim_code(stmts):
             indent += 1
         if elems and elems[0] in ('return',):
             indent = max(indent - 1, 0)
-        if elems and elems[0] in ('pass', ) and not format_nim_code.prev.startswith(('if', 'elif', 'else', 'label',)):
+        if elems and elems[0] in ('pass', ) and not format_nim_code.prev.startswith(('if', 'elif', 'else', 'label', '###')):
             indent = max(indent - 1, 0)
         if not elems:  # newline -> decrease indent
             indent = max(indent - 1, 0)

@@ -69,10 +69,10 @@ def write_statement(param, newline, sep=''):
                 # Octet string -> convert to Ada string
                 last_it = ""
                 if isinstance(param, ogAST.PrimSubstring):
-                    range_str = f"{string}'Range" # TODO
-                elif basic_type.Min == basic_type.Max:
-                    range_str = f"{string}.Data'Range" # TODO
+                    range_str = f"0 ..< {string}.nCount" # TODO
                     string += ".arr"
+                elif basic_type.Min == basic_type.Max:
+                    range_str = f"0 ..< len({string})" # TODO
                 else:
                     range_str = f"0 ..< {string}.nCount"
                     string += ".arr"
@@ -252,8 +252,9 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
                 elif varbty.kind in ('SequenceOfType',
                                      'OctetStringType',
-                                     'BitStringType'):
-                    dstr = array_content(def_value, dstr, varbty)
+                                     'BitStringType',
+                                     'IA5StringType'):
+
                     if isinstance(def_value, ogAST.PrimStringLiteral):
                         if hasattr(def_value, 'hexstring'):
                             S = len(def_value.hexstring)
@@ -261,17 +262,27 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                             S = len(def_value.value)-2
                     else:
                         S = len(def_value.value)
-                    context_decl.extend([
-                        f"var tmp_{var_name}_{local_tmpvar_count}: {variable_type}",
-                        f"tmp_{var_name}_{local_tmpvar_count}.arr[0 ..< {S}] = {dstr}"
-                    ])
-                    if varbty.Min != varbty.Max:
-                        context_decl.append(f"tmp_{var_name}_{local_tmpvar_count}.nCount = ({S}).cint",)
+
+                    if varbty.kind == 'IA5StringType':
+                        dstr = ia5string_raw(def_value)
+                        context_decl.extend([
+                            f"var tmp_{var_name}_{local_tmpvar_count}: {variable_type}",
+                            f"tmp_{var_name}_{local_tmpvar_count}[0 ..< {S}] = {dstr}"
+                        ])
+                    else:
+                        dstr = array_content(def_value, dstr, varbty)
+                        context_decl.extend([
+                            f"var tmp_{var_name}_{local_tmpvar_count}: {variable_type}",
+                            f"tmp_{var_name}_{local_tmpvar_count}.arr[0 ..< {S}] = {dstr}"
+                        ])
+                        if varbty.Min != varbty.Max:
+                            context_decl.append(f"tmp_{var_name}_{local_tmpvar_count}.nCount = ({S}).cint",)
+
                     dstr = f"tmp_{var_name}_{local_tmpvar_count}"
                     local_tmpvar_count += 1
 
-                elif varbty.kind == 'IA5StringType':
-                    dstr = ia5string_raw(def_value)
+                # elif varbty.kind == 'IA5StringType':
+                #     dstr = ia5string_raw(def_value)
 
                 elif varbty.kind == 'EnumeratedType':
                     #dstr = f'{variable_type.replace("-", "_")}_{dstr}'
@@ -287,6 +298,16 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 assert not dst and not dlocal, \
                     'DCL: Expecting a ground expression'
                 initial_values.append(f'{var_name}: {dstr}')
+
+            else:
+                vbty = find_basic_type(var_type)
+
+                if vbty.kind.startswith('Choice'):
+                    child = list(vbty.Children.keys())[0]
+                    T = type_name(var_type)
+                    initial_values.append(
+                        f"{var_name}: {T}(u: {T}_unchecked_union(), kind: {type_name(var_type, use_prefix=False)}_{vbty.Children[child].EnumID})"
+                    )
 
         if initial_values:
             ctxt += ", ".join(initial_values)
@@ -407,7 +428,9 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     template_str = f'\n\n\n### ------ IMPLEMENTATION ------ ###\n\n'
 
     for asnfile in process.DV.asn1Files:
-        cfile = asnfile.replace("-","_").replace(".asn", ".c")
+        tmp = asnfile.split(os.path.sep)
+        tmp[-1] = tmp[-1].replace("-","_").replace(".asn", ".c")
+        cfile = os.path.join(os.getcwd(), tmp[-1])
         template_str += '\n{.compile: "%s"}\n' % cfile
 
 
@@ -504,7 +527,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 prefix = f'p{settings.SEPARATOR}' if not proc.exported else ''
                 nim_decl_template.append(
                     f'pragma Export (C, {prefix}{proc.inputString},'
-                    f' "{process.name.lower()}_PI_{proc.inputString}")')
+                    f' "{process.name.lower()}_PI_{proc.inputString}")') # TODO
 
     # Generate the code for the process-level variable declarations
     taste_template.extend(process_level_decl)
@@ -655,7 +678,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             if state.endswith('START'):
                 return
             # taste_template.append(f'when {settings.ASN1SCC}{state} =>')
-            statecase = [f'of {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{settings.ASN1SCC}{state}:']
+            statecase = [f'of {settings.PROCESS_NAME.capitalize()}_States_{state}:']
             input_def = process.input_mapping[signame].get(state)
             if state in process.aggregates.keys():
                 taste_template.extend(statecase)
@@ -725,12 +748,13 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                                              else "R", sig))
 
             if not instance:
-                nim_decl_template.append(f'const RI{settings.SEPARATOR}{sig} '
+                nim_decl_template.append(f'let RI{settings.SEPARATOR}{sig} '
                                          f'= {process.name}_RI.{sig}')
             ri_stub_decl.append(f'proc {sig}*{param_spec}')
             ri_stub_src.extend([f'proc {sig}*{param_spec} =', 'pass'])
 
     # for the .ads file, generate the declaration of the external procedures
+    compile_pragma_set = False
     for proc in (proc for proc in process.procedures if proc.external):
         sig = proc.inputString
         procname = f'RI{settings.SEPARATOR}{sig}'
@@ -741,20 +765,21 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         for param in proc.fpar:
             typename = type_name(param['type'])
             name = param['name']
-            if param['direction'] == 'in':
-                in_params.append(f'{name} : ptr {typename}')
-            else:
-                out_params.append(f'{typename}')
+            in_params.append(f'{name} : ptr {typename}')
+            # if param['direction'] == 'in':
+            #     in_params.append(f'{name} : ptr {typename}')
+            # else:
+            #     out_params.append(f'{typename}')
 
         if in_params:
             params_spec += f' ({", ".join(in_params)})'
         else:
             params_spec += '()'
 
-        if out_params:
-            params_spec += ':' + f' ({", ".join(out_params)})'
-        else:
-            params_spec += ': void'
+        # if out_params:
+        #     params_spec += ':' + f' ({", ".join(out_params)})'
+        # else:
+        params_spec += ': void'
 
         ri_header += params_spec
 
@@ -763,14 +788,17 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 # Type and instance do not need this declarations, only standalone
                 # processes.
                 nim_decl_template.append(f'###  Synchronous Required Interface "{sig}"')
-                nim_decl_template.append(f'const {procname}* = {process.name}_RI.{sig}')
+                nim_decl_template.append(f'let {procname}* = {process.name}_RI.{sig}')
             # ri_stub_decl.append(f'proc {sig}*{params_spec}')
-            ri_stub_src.extend([f'when "{process.name}_RI.c" in splitLines(staticExec("ls *.c")):',
-                                '{.compile: "%s_RI.c" }' % process.name,
-                                f'static: echo "\e[32mFound {process.name}_RI.c \e[0m"',
-                                'else:', fr'static: echo "\e[31mCannot find {process.name}_RI.c\e[0m"',
-                                '# end try/catch',
-                                f'proc {sig}*{params_spec} ' + '{.importc: "%s_RI_%s".}' % (process.name, sig)])
+            if not compile_pragma_set:
+                ri_stub_src.extend([f'when "{process.name}_RI.c" in splitLines(staticExec("ls *.c")):',
+                                    '{.compile: "%s_RI.c" }' % process.name,
+                                    f'static: echo "\e[32mFound {process.name}_RI.c \e[0m"',
+                                    'else:', fr'static: echo "\e[31mCannot find {process.name}_RI.c\e[0m"',
+                                    '# end try/catch',
+                                    ])
+                compile_pragma_set = True
+            ri_stub_src.append(f'proc {sig}*{params_spec} ' + '{.importc: "%s_RI_%s".}' % (process.name, sig))
 
     # for the .ads file, generate the declaration of timers set/reset functions
     for timer in process.timers:
@@ -787,8 +815,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             ri_stub_decl.append(f'proc SET_{timer} (Val : {settings.ASN1SCC}T_UInt32): {settings.ASN1SCC}T_UInt32')
             ri_stub_src.extend(
                 [f'proc SET_{timer} (Val : {settings.ASN1SCC}T_UInt32): {settings.ASN1SCC}T_UInt32 =', 'pass'])
-            nim_decl_template.extend([f'proc RESET_{timer}() =',
-                                      f'return {process.name}_RI.Reset_{timer}()'])
+            nim_decl_template.extend([f'proc RESET_{timer}(): void =',
+                                      f'{process.name}_RI.Reset_{timer}()', 'return'])
             ri_stub_decl.append(f'proc RESET_{timer}')
             ri_stub_src.extend([f'proc RESET_{timer}(): void =', 'pass'])
         else:
@@ -1224,7 +1252,7 @@ def _call_external_function(output, **kwargs) -> str:
                             and not basic_param.kind.startswith('asn1SccSint'):
                         pass # Already appended code
                     else:
-                        code.append(f'{tmp_id} = {p_id}')
+                        code.append(f'{tmp_id} = {p_id}' + '[]'*(not param.is_raw))
                     list_of_params.append(tmp_id)
                 else:
                     # Output parameters/local variables
@@ -1236,7 +1264,7 @@ def _call_external_function(output, **kwargs) -> str:
 
             else:
                 prefix = f'RI{settings.SEPARATOR}' if need_prefix else ''
-                code.append(f'{prefix}{name}')
+                code.append(f'{prefix}{name}()')
         else:
             # inner procedure call without a RETURN statement
             # retrieve the procedure signature
@@ -1262,10 +1290,15 @@ def _call_external_function(output, **kwargs) -> str:
                     else:
                         p_id = array_content(param, p_id, basic_param)
 
+                elif param.is_raw:
+                    local_decl.append(f"var tmp_raw_{param.tmpVar}: {type_name(param.exprType)}")
+                    p_code.append(f"tmp_raw_{param.tmpVar} = {p_id}")
+                    p_id = f"tmp_raw_{param.tmpVar}"
+
                 code.extend(p_code)
                 local_decl.extend(p_local)
                 # no need to use temporary variables, we are in pure Ada
-                list_of_params.append(p_id)
+                list_of_params.append(f"addr {p_id}")
             if list_of_params:
                 code.append(f'p{settings.SEPARATOR}{proc.inputString}({", ".join(list_of_params)})')
             else:
@@ -1297,7 +1330,12 @@ def _task_informal_text(task, **kwargs):
     code = []
     if task.comment:
         code.extend(traceability(task.comment))
-    code.extend(['### ' + text.replace('\n', '\n### ') for text in task.elems])
+    for text in task.elems:
+        if "\n" in text:
+            code.extend(["### " + elem for elem in text.split("\n")])
+        else:
+            code.append("### " + text)
+    # code.extend(['### ' + text.replace('\n', '\n### ') for text in task.elems])
     return code, []
 
 
@@ -1432,6 +1470,10 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
 
         q_stmts, q_str, q_decl = expression(dec.question, readonly=1)
 
+        if isinstance(dec.question, ogAST.PrimFPAR):
+            q_str = f"{q_str}[]"
+
+
         # Add code-to-model traceability
         code.extend(traceability(dec))
         local_decl.extend(q_decl)
@@ -1477,7 +1519,7 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
                 if op.operand == '=':
                     operand = '=='
                 else:
-                    operand = '!='
+                    operand = op.operand
 
                 cbty = find_basic_type(constant.exprType)
                 ans_stmts, ans_str, ans_decl = expression(constant, readonly=1)
@@ -1485,35 +1527,47 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
                 local_decl.extend(ans_decl)
                 if not basic:
                     if op in (ogAST.ExprEq, ogAST.ExprNeq):
+
+                        local_decl.extend([
+                            f"var tmp_{actual_type}_{dec.tmpVar}: {actual_type}"
+                        ])
+
                         if isinstance(constant, (ogAST.PrimSequenceOf,
                                                  ogAST.PrimStringLiteral)):
                             if qbty.kind == 'IA5StringType':
                                 ans_str = ia5string_raw(constant)
                             else:
                                 ans_str = array_content(constant, ans_str, qbty)
-                        local_decl.extend([
-                            f"var tmp_{actual_type}_{dec.tmpVar}: {actual_type}"
-                        ])
-                        if int(cbty.Min) > 1 or int(cbty.Max) > 1:
-                            postfix = ''
-                            if isinstance(constant, ogAST.PrimStringLiteral):
-                                postfix = f'[0 ..< {constant.exprType.Min}]'
-                            elif constant.expr.is_raw:
-                                postfix = '.arr'
-                            code.extend([
-                                f"tmp_{actual_type}_{dec.tmpVar}{postfix} = {ans_str}"
-                            ])
-                            ans_str = f"tmp_{actual_type}_{dec.tmpVar}"
+
+                            if int(cbty.Min) > 1 or int(cbty.Max) > 1:
+                                postfix = ''
+                                if isinstance(constant, ogAST.PrimStringLiteral):
+                                    postfix = f'.arr[0 ..< {constant.exprType.Min}]'
+                                elif constant.expr.is_raw:
+                                    postfix = '.arr'
+                                code.extend([
+                                    f"tmp_{actual_type}_{dec.tmpVar}{postfix} = {ans_str}"
+                                ])
+                                ans_str = f"tmp_{actual_type}_{dec.tmpVar}"
 
                         if question_basic in ('IA5StringType', ):
                             ptr = False
                         else:
                             ptr = True
-                        exp += f'{actual_type}_Equal({"addr"*ptr} tmp{dec.tmpVar}, {"addr"*ptr} {ans_str})'
+                            if constant.is_raw:
+                                local_decl.append(f"var tmp{constant.tmpVar}: {actual_type}")
+                                code.append(f"tmp{constant.tmpVar} = {ans_str}")
+                                ans_str = f"tmp{constant.tmpVar}"
+
+                        exp += f'{sub_sep} {actual_type}_Equal({"addr"*ptr} tmp{dec.tmpVar}, {"addr"*ptr} {ans_str})'
+                        # if op == ogAST.ExprNeq:
+                        #     exp = f'{sub_sep}not {exp}'
+                        # else:
+                        #     exp = f'{sub_sep}{exp}'
                         if op == ogAST.ExprNeq:
-                            exp = f'{sub_sep}not {exp}'
+                            exp = f'not {exp}'
                         else:
-                            exp = f'{sub_sep}{exp}'
+                            exp = f'{exp}'
                     else:
                         exp += f'{sub_sep}tmp{dec.tmpVar} {operand} {ans_str}'
                 else:
@@ -1642,11 +1696,11 @@ def _transition(tr, **kwargs):
                     # still the old state, there is a risk of infinite recursion)
                     if not tr.terminator.substate:
                         code.append(
-                            f'{settings.LPREFIX}.state = {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{settings.ASN1SCC}{tr.terminator.inputString.lower()}')
+                            f'{settings.LPREFIX}.state = {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{tr.terminator.inputString.lower()}')
                     else:
                         # We may be already in a substate
                         code.append(f'{settings.LPREFIX}.{tr.terminator.substate}{settings.SEPARATOR}state ='
-                                    f' {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{settings.ASN1SCC}{tr.terminator.inputString.lower()}')
+                                    f' {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{tr.terminator.inputString.lower()}')
                     # Call the START function of the state aggregation
                     code.append(f'{tr.terminator.next_id}')
                     code.append('trId = -1')
@@ -1654,10 +1708,10 @@ def _transition(tr, **kwargs):
                     code.append(f'trId = {str(tr.terminator.next_id)}')
                     if tr.terminator.next_id == -1:
                         if not tr.terminator.substate:  # XXX add to C generator asn1SccOperators_States_asn1Sccwait
-                            code.append(f'{settings.LPREFIX}.state = {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{settings.ASN1SCC}{tr.terminator.inputString.lower()}')
+                            code.append(f'{settings.LPREFIX}.state = {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{tr.terminator.inputString.lower()}')
                         else:
                             code.append(f'{settings.LPREFIX}.{tr.terminator.substate}{settings.SEPARATOR}state ='
-                                        f' {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{settings.ASN1SCC}{tr.terminator.inputString.lower()}')
+                                        f' {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{tr.terminator.inputString.lower()}')
                 else:
                     # "nextstate -": switch case to re-run the entry transition
                     # in case of a composite state or state aggregation
@@ -1758,7 +1812,10 @@ def _floating_label(label, **kwargs):
     code.extend([f'label {label.inputString}:', 'pass', '# end label'])
     if label.transition:
         code_trans, local_trans = generate(label.transition)
-        code.extend(code_trans)
+        idx = code.index('pass')
+        code.pop(idx)
+        for line in code_trans[::-1]:
+            code.insert(idx, line)
         local_decl.extend(local_trans)
     else:
         code.append('return')
@@ -1798,7 +1855,7 @@ def _inner_procedure(proc, **kwargs):
         # the C symbol with the same name. Overrules the pragma import from
         # taste for required interfaces.
         local_decl.append(f'pragma Import (C, p{settings.SEPARATOR}{proc.inputString}, '
-                          f'"{proc.inputString}")')
+                          f'"{proc.inputString}")') # TODO
     else:
         # Generate the code for the procedure itself
         # local variables and code of the START transition
