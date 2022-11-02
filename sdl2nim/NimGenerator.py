@@ -732,7 +732,83 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                                '# end Startup',
                                ''])
 
-    # for the .ads file, generate the declaration of the required interfaces
+    # for the .ads file, generate the declaration of the external procedures
+    for proc in (proc for proc in process.procedures if proc.external):
+        sig = proc.inputString
+        procname = f'RI{settings.SEPARATOR}{sig}'
+        ri_header = f'proc {procname}'
+        in_params = []
+        out_params = []
+        params_spec = ""
+        c_params_spec = ""
+
+        for param in proc.fpar:
+            typename = type_name(param['type'])
+            name = param['name']
+            in_params.append(f'{name} : ptr {typename}')
+            c_params_spec += f"{typename}* {name}, "
+            # if param['direction'] == 'in':
+            #     in_params.append(f'{name} : ptr {typename}')
+            # else:
+            #     out_params.append(f'{typename}')
+
+        if in_params:
+            params_spec += f' ({", ".join(in_params)})'
+            c_params_spec = f"({c_params_spec[:-2]})"
+        else:
+            params_spec += '()'
+            c_params_spec = "()"
+        # if out_params:
+        #     params_spec += ':' + f' ({", ".join(out_params)})'
+        # else:
+        params_spec += ': void'
+
+        ri_header += params_spec
+
+        fname = f"{sig}_invoke_ri"
+
+        if not generic:
+            if not instance:
+                # Type and instance do not need this declarations, only standalone
+                # processes.
+                nim_decl_template.append(f'###  Synchronous Required Interface "{sig}"')
+                nim_decl_template.append(f'let {procname}* = {process.name.lower()}_RI.{process.name.lower()}_RI_{sig}')
+            # ri_stub_decl.append(f'proc {sig}*{params_spec}')
+
+            tmp_c_code = [
+                '#include <stdio.h>',
+                '#include <stdlib.h>',
+                '#include "dataview_uniq.h"',
+                f'void {process.name.lower()}_RI_{sig}{c_params_spec}{{}};'
+            ]
+            double_bracket = "\""
+            literal_double_bracket = "\\\""
+            tmp_c_code = '"' + '\\n'.join([f'{chunk.replace(double_bracket, literal_double_bracket)}' for chunk in tmp_c_code]) + '"'
+
+            ri_stub_src.extend([f'when "{fname}" in splitLines(staticExec("ls *.c")):',
+                                '{.compile: "%s.c" }' % fname,
+                                fr"static:",
+                                f'echo "\e[32mFound {fname}.c \e[0m"',
+                                f"# end block",
+                                'elif defined(extgen):',
+                                fr"static:",
+                                fr'echo "\e[31mCannot find {fname}.c\e[0m"',
+                                fr'echo "\e[31mGenerating temporary file tmp_{fname}.c with empty function body\e[0m"',
+                                f"let lines = {tmp_c_code}",
+                                f'writeFile("tmp_{fname}.c", lines)',
+                                f"# end block",
+                                '{.compile: "tmp_%s.c" }' % fname,
+                                'else:',
+                                fr"static:",
+                                fr'echo "\e[31mCannot find {fname}.c\e[0m"',
+                                f"# end block",
+                                '# end try/catch',
+                                f'proc {process.name.lower()}_RI_{sig}*{params_spec} ' + '{.importc: "%s_RI_%s".}' % (process.name.lower(), sig),
+                                '\n'
+                                ])
+
+
+    # generate the declaration of the required interfaces
     # output signals are the asynchronous RI - only one parameter
     for signal in process.output_signals:
         sig = signal['name']
@@ -752,53 +828,6 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                                          f'= {process.name}_RI.{sig}')
             ri_stub_decl.append(f'proc {sig}*{param_spec}')
             ri_stub_src.extend([f'proc {sig}*{param_spec} =', 'pass'])
-
-    # for the .ads file, generate the declaration of the external procedures
-    compile_pragma_set = False
-    for proc in (proc for proc in process.procedures if proc.external):
-        sig = proc.inputString
-        procname = f'RI{settings.SEPARATOR}{sig}'
-        ri_header = f'proc {procname}'
-        in_params = []
-        out_params = []
-        params_spec = ""
-        for param in proc.fpar:
-            typename = type_name(param['type'])
-            name = param['name']
-            in_params.append(f'{name} : ptr {typename}')
-            # if param['direction'] == 'in':
-            #     in_params.append(f'{name} : ptr {typename}')
-            # else:
-            #     out_params.append(f'{typename}')
-
-        if in_params:
-            params_spec += f' ({", ".join(in_params)})'
-        else:
-            params_spec += '()'
-
-        # if out_params:
-        #     params_spec += ':' + f' ({", ".join(out_params)})'
-        # else:
-        params_spec += ': void'
-
-        ri_header += params_spec
-
-        if not generic:
-            if not instance:
-                # Type and instance do not need this declarations, only standalone
-                # processes.
-                nim_decl_template.append(f'###  Synchronous Required Interface "{sig}"')
-                nim_decl_template.append(f'let {procname}* = {process.name}_RI.{sig}')
-            # ri_stub_decl.append(f'proc {sig}*{params_spec}')
-            if not compile_pragma_set:
-                ri_stub_src.extend([f'when "{process.name}_RI.c" in splitLines(staticExec("ls *.c")):',
-                                    '{.compile: "%s_RI.c" }' % process.name,
-                                    f'static: echo "\e[32mFound {process.name}_RI.c \e[0m"',
-                                    'else:', fr'static: echo "\e[31mCannot find {process.name}_RI.c\e[0m"',
-                                    '# end try/catch',
-                                    ])
-                compile_pragma_set = True
-            ri_stub_src.append(f'proc {sig}*{params_spec} ' + '{.importc: "%s_RI_%s".}' % (process.name, sig))
 
     # for the .ads file, generate the declaration of timers set/reset functions
     for timer in process.timers:
@@ -1252,7 +1281,7 @@ def _call_external_function(output, **kwargs) -> str:
                             and not basic_param.kind.startswith('asn1SccSint'):
                         pass # Already appended code
                     else:
-                        code.append(f'{tmp_id} = {p_id}' + '[]'*(not param.is_raw))
+                        code.append(f'{tmp_id} = {p_id}' + '[]'*((not param.is_raw) and isinstance(param, ogAST.PrimFPAR)))
                     list_of_params.append(tmp_id)
                 else:
                     # Output parameters/local variables
@@ -1470,7 +1499,8 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
 
         q_stmts, q_str, q_decl = expression(dec.question, readonly=1)
 
-        if isinstance(dec.question, ogAST.PrimFPAR):
+        # Function parameters are pointers, so dereference them
+        if isinstance(dec.question, ogAST.PrimFPAR) and not dec.question.is_raw:
             q_str = f"{q_str}[]"
 
 
@@ -1541,8 +1571,10 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
 
                             if int(cbty.Min) > 1 or int(cbty.Max) > 1:
                                 postfix = ''
-                                if isinstance(constant, ogAST.PrimStringLiteral):
+                                if isinstance(constant, ogAST.PrimStringLiteral) and qbty.kind != 'IA5StringType':
                                     postfix = f'.arr[0 ..< {constant.exprType.Min}]'
+                                elif isinstance(constant, ogAST.PrimStringLiteral) and qbty.kind == 'IA5StringType':
+                                    postfix = f'[0 ..< {constant.exprType.Min}]'
                                 elif constant.expr.is_raw:
                                     postfix = '.arr'
                                 code.extend([
@@ -1554,10 +1586,23 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
                             ptr = False
                         else:
                             ptr = True
-                            if constant.is_raw:
-                                local_decl.append(f"var tmp{constant.tmpVar}: {actual_type}")
-                                code.append(f"tmp{constant.tmpVar} = {ans_str}")
-                                ans_str = f"tmp{constant.tmpVar}"
+                            # if constant.is_raw:
+                                # local_decl.append(f"var tmp_{actual_type}_{dec.tmpVar}: {actual_type}")
+                            if int(cbty.Min) > 1 or int(cbty.Max) > 1:
+                                postfix = ''
+                                if isinstance(constant, ogAST.PrimStringLiteral):
+                                    postfix = f'.arr[0 ..< {constant.exprType.Min}]'
+                                elif constant.expr.is_raw:
+                                    postfix = '.arr'
+                                code.extend([
+                                    f"tmp_{actual_type}_{dec.tmpVar}{postfix} = {ans_str}"
+                                ])
+
+                            else:
+                                code.extend([
+                                    f"tmp_{actual_type}_{dec.tmpVar} = {ans_str}"
+                                ])
+                            ans_str = f"tmp_{actual_type}_{dec.tmpVar}"
 
                         exp += f'{sub_sep} {actual_type}_Equal({"addr"*ptr} tmp{dec.tmpVar}, {"addr"*ptr} {ans_str})'
                         # if op == ogAST.ExprNeq:

@@ -341,6 +341,10 @@ task filegen, "Generate Nim Files":
 task build, "Build Project":
     filegenTask()
     exec "nim c -d:release --path:{srcpath} --path:{outpath} {procname}.nim"
+    
+task buildextern, "Build Project":
+    filegenTask()
+    exec "nim c -d:release -d:extgen --path:{srcpath} --path:{outpath} {procname}.nim"
 
 task clean, "Clean Project Folder":
     {f'exec "find . {excluded_from_clean} -delete"' if srcpath != outpath else 'echo "Create your own clean rules here"'}

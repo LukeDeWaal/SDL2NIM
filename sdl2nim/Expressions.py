@@ -203,6 +203,7 @@ def _prim_call(prim, **kwargs):
         tmp = param_str.split('.')
         tmp.insert(-1, 'exist')
         nim_string += '.'.join(tmp)
+        nim_string = f"({nim_string}).{type_name(prim.exprType)}"
 
     elif func == 'present':
         exp = params[0]
@@ -1424,9 +1425,13 @@ def _sequence(seq, **kwargs):
                               for fd_name, fd_data in optional_fields.items()
                               if fd_data['present'])
 
-    stmts.extend([
-        f"%s.exist.{varname} = 1" for varname, _dat in present_fields
-    ])
+        nim_string += ", "
+        nim_string += f"exist: {type_name(seq.exprType)}_exist({', '.join([f'{varname}: 1' for varname, _dat in present_fields ])})"
+
+    # stmts.extend([
+    #     f"%s.exist.{varname} = 1" for varname, _dat in present_fields
+    # ])
+
     nim_string += ')'
     return stmts, str(nim_string), local_decl
 
