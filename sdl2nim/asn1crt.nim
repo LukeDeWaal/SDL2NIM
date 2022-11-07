@@ -205,5 +205,5 @@ proc `//`*[T](a, b: T): T =
     result.arr[0 ..< a.nCount] = a.arr[0 ..< a.nCount]
     result.arr[a.nCount ..< a.nCount + b.nCount] = b.arr[0 ..< b.nCount]
 
-proc num*[T: Ordinal | enum](v: T): asn1SccUint =
-  return ord(v).asn1SccUint
+proc num*[T: Ordinal | enum](v: T): asn1SccSint =
+  return ord(v).asn1SccSint

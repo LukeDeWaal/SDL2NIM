@@ -280,11 +280,14 @@ def procedure_header(proc, SEPARATOR):
     else:
         pi_header += '():'
 
-    pi_header += ' void'
+    if proc.return_type:
+        pi_header += f' {type_name(proc.return_type)}'
+    else:
+        pi_header += ' void'
     return pi_header
 
 
-def generate_nim_definitions(procname: str, srcpath: str, outpath: str):
+def generate_nim_definitions(procname: str, srcpath: str, outpath: str, hashcode: int = None):
     if not os.path.isdir(srcpath):
         srcpath = os.path.dirname(srcpath)
     srcpath = os.path.abspath(srcpath)
@@ -314,6 +317,8 @@ def generate_nim_definitions(procname: str, srcpath: str, outpath: str):
 
     libdir = "~/.choosenim/toolchains/nim-*/lib/" # TODO: Specify specific nim version to use
 
+    cache_path = os.path.abspath(os.path.expanduser(os.path.expandvars(f"~/.cache/nim/{procname}_out_{hashcode}/")))
+
     # TODO : Fix asn1scc path
     filestr = \
 f"""
@@ -340,15 +345,15 @@ task filegen, "Generate Nim Files":
 
 task build, "Build Project":
     filegenTask()
-    exec "nim c -d:release --path:{srcpath} --path:{outpath} {procname}.nim"
+    exec "nim c -d:release --path:{srcpath} --path:{outpath} --nimcache:{cache_path} {procname}.nim"
     
 task buildextern, "Build Project":
     filegenTask()
-    exec "nim c -d:release -d:extgen --path:{srcpath} --path:{outpath} {procname}.nim"
+    exec "nim c -d:release -d:extgen --path:{srcpath} --path:{outpath} --nimcache:{cache_path} {procname}.nim"
 
 task clean, "Clean Project Folder":
     {f'exec "find . {excluded_from_clean} -delete"' if srcpath != outpath else 'echo "Create your own clean rules here"'}
-
+    exec "rm -rf {cache_path}"
 
 task rebuild, "Clean & Build":
     cleanTask()

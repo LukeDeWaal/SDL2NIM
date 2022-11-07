@@ -7,6 +7,6 @@ LOCAL_VAR = {}
 TYPES = None
 PROCEDURES = []
 OUT_SIGNALS = []
-SEPARATOR = "_X_"
+SEPARATOR = "_0_"
 LPREFIX = u'context'
 ASN1SCC = 'asn1Scc'

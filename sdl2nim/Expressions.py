@@ -84,6 +84,9 @@ def _primary_variable(prim, **kwargs):
 
     return [], str(nim_string), []
 
+@expression.register(ogAST.PrimFPAR)
+def _prim_fpar(prim, **kwargs):
+    return [], f'{prim.value[0]}[]', []
 
 @expression.register(ogAST.PrimCall)
 def _prim_call(prim, **kwargs):
@@ -92,6 +95,7 @@ def _prim_call(prim, **kwargs):
 
     func = prim.value[0].lower()
     params = prim.value[1]['procParams']
+
 
     if func in ('abs', 'fix', 'float', 'chr',):
         is_unsigned = (float(find_basic_type(params[0].exprType).Min) >= 0)
@@ -140,6 +144,7 @@ def _prim_call(prim, **kwargs):
         param_stmts, s2, local_var = expression(p2, readonly=1)
         stmts.extend(param_stmts)
         local_decl.extend(local_var)
+
         fcn = 'shl' if func == "shift_left" else 'shr'
         nim_string += f'(({s1}) {fcn} ({s2}))'
 
@@ -260,6 +265,8 @@ def _prim_call(prim, **kwargs):
         stmts.extend(param_stmts)
         local_decl.extend(local_var)
         local_decl.append(f'var tmp{prim.tmpVar}: {settings.ASN1SCC}Sint')
+
+
         choices = [f'case {varstr}.kind:']
         # all choice elements must be either signed or unsigned
         # a mix would result in inconsistencies
@@ -367,6 +374,9 @@ def _prim_call(prim, **kwargs):
                 else:
                     param_str = array_content(param, param_str, basic_param)
 
+            elif isinstance(param, ogAST.PrimVariable):
+                param_str = f'addr {param_str}'
+
             list_of_params.append(param_str)
             stmts.extend(param_stmt)
             local_decl.extend(local_var)
@@ -374,6 +384,7 @@ def _prim_call(prim, **kwargs):
         nim_string += ')'
 
     return stmts, str(nim_string), local_decl
+
 
 
 @expression.register(ogAST.PrimIndex)
@@ -684,11 +695,11 @@ def _assign_expression(expr, **kwargs):
     basic_left = find_basic_type(expr.left.exprType)
     basic_right = find_basic_type(expr.right.exprType)
 
-    if isinstance(expr.left, ogAST.PrimFPAR):
-        left_str = f"{left_str}[]"
-
-    if isinstance(expr.right, ogAST.PrimFPAR):
-        right_str = f"{right_str}[]"
+    # if isinstance(expr.left, ogAST.PrimFPAR):
+    #     left_str = f"{left_str}[]"
+    #
+    # if isinstance(expr.right, ogAST.PrimFPAR):
+    #     right_str = f"{right_str}[]"
 
     if (basic_left.kind == 'IA5StringType') and isinstance(expr.right, ogAST.PrimStringLiteral):
         # TODO
@@ -1231,7 +1242,7 @@ def _null(primary, **kwargs):
 @expression.register(ogAST.PrimEmptyString)
 def _empty_string(primary, **kwargs):
     ''' Generate code for an empty SEQUENCE OF: {} '''
-    nim_string = '""'
+    nim_string = f'{type_name(primary.exprType)}()'
     return [], str(nim_string), []
 
 

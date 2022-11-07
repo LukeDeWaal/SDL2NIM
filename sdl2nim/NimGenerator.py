@@ -376,10 +376,10 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # Declare start procedure for aggregate states XXX add in C generator
         # should create one START per "via" clause, TODO later
         for name, substates in process.aggregates.items():
-            proc_name = f'proc {name}{settings.SEPARATOR}START'
+            proc_name = f'proc {name}{settings.SEPARATOR}START(): void'
             process_level_decl.append(f'{proc_name}')
-            aggreg_start_proc.extend([f'{proc_name} is', ])
-            aggreg_start_proc.extend(f'Execute_Transition ({subname.statename}{settings.SEPARATOR}START)'
+            aggreg_start_proc.extend([f'{proc_name} =', ])
+            aggreg_start_proc.extend(f'Execute_Transition (num({settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{subname.statename}))'
                                      for subname in substates)
             aggreg_start_proc.extend([f'# end {name}{settings.SEPARATOR}START',
                                       '\n'])
@@ -407,7 +407,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         asn1_modules = \
             'import\n' \
             f'    asn1crt,\n' \
-            f'    {process.name}_datamodel,\n' \
+            f'    {process.name.lower()}_datamodel,\n' \
             f'    {asn1_custom_type_files}\n'
     except TypeError:
         asn1_modules = '###  No ASN.1 data types are used in this model'
@@ -447,11 +447,11 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             # the value of the instance is used, not the ASN1 constant of the
             # type.
             generic_spec += f"   {process.name}_ctxt : {settings.ASN1SCC}Context_{process.name}\n"
-        if has_cs:
-            # For continuous signals the runtime must provide Check_Queue
-            generic_spec += "   with procedure Check_Queue (Res : out asn1bool)\n"
-        if ri_list:
-            generic_spec += "   with " + "\n   with ".join(ri_list) + ''
+        # if has_cs:
+        #     # For continuous signals the runtime must provide Check_Queue
+        #     generic_spec += "   with procedure Check_Queue (Res : out asn1bool)\n"
+        # if ri_list:
+        #     generic_spec += "   with " + "\n   with ".join(ri_list) + ''
     if instance:
         instance_decl = f"with {process.instance_of_name}"
 
@@ -515,9 +515,19 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     # Generate the code of the procedures
     inner_procedures_code = []
     for proc in process.content.inner_procedures:
+
         proc_code, proc_local = generate(proc)
-        process_level_decl.extend(proc_local)
-        inner_procedures_code.extend(proc_code)
+
+        if proc in process.procedures and len(proc_code) <= 1:
+            args = [f"{par['name']}" for par in proc.fpar]
+            proc_local[-1] += f' = RI{settings.SEPARATOR}{proc.inputString}({", ".join(args)})'
+            process_level_decl.extend(proc_local)
+            inner_procedures_code.extend(proc_code)
+            continue
+        else:
+            process_level_decl.extend(proc_local)
+            inner_procedures_code.extend(proc_code)
+
         if proc.exported:
             # Exported procedures must be declared in the .ads
             pi_header = procedure_header(proc)
@@ -525,9 +535,9 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             if not proc.external and not generic:
                 # Export for TASTE as a synchronous PI
                 prefix = f'p{settings.SEPARATOR}' if not proc.exported else ''
-                nim_decl_template.append(
-                    f'pragma Export (C, {prefix}{proc.inputString},'
-                    f' "{process.name.lower()}_PI_{proc.inputString}")') # TODO
+                # nim_decl_template.append(
+                #     f'pragma Export (C, {prefix}{proc.inputString},'
+                #     f' "{process.name.lower()}_PI_{proc.inputString}")') # TODO
 
     # Generate the code for the process-level variable declarations
     taste_template.extend(process_level_decl)
@@ -761,7 +771,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         # if out_params:
         #     params_spec += ':' + f' ({", ".join(out_params)})'
         # else:
-        params_spec += ': void'
+        returntype = type_name(proc.return_type) if proc.return_type else "void"
+        params_spec += f': {returntype}'
 
         ri_header += params_spec
 
@@ -772,14 +783,14 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 # Type and instance do not need this declarations, only standalone
                 # processes.
                 nim_decl_template.append(f'###  Synchronous Required Interface "{sig}"')
-                nim_decl_template.append(f'let {procname}* = {process.name.lower()}_RI.{process.name.lower()}_RI_{sig}')
+                nim_decl_template.append(f'let {procname}* = {process.name}_RI.{process.name.lower()}_RI_{sig}')
             # ri_stub_decl.append(f'proc {sig}*{params_spec}')
 
             tmp_c_code = [
                 '#include <stdio.h>',
                 '#include <stdlib.h>',
                 '#include "dataview_uniq.h"',
-                f'void {process.name.lower()}_RI_{sig}{c_params_spec}{{}};'
+                f'{returntype} {process.name.lower()}_RI_{sig}{c_params_spec}{{}};'
             ]
             double_bracket = "\""
             literal_double_bracket = "\\\""
@@ -885,13 +896,14 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
         # Expose Execute_Transition, needed by the simulator to execute continuous signals
         nim_decl_template.extend([
-            f'proc Execute_Transition (Id : asn1SccSint) =',
+            f'proc Execute_Transition (Id : asn1SccSint): void =',
             f'{process.name}_Instance.Execute_Transition(Id)',
-            'return'])
+            'return',
+            '# end Execute_Transition'])
         nim_decl_template.append(f'const CS_Only = {process.name}_Instance.CS_Only')
 
     else:
-        nim_decl_template.append(f'proc Execute_Transition (Id : asn1SccSint)')
+        nim_decl_template.extend([f'proc Execute_Transition (Id : asn1SccSint): void'])
         nim_decl_template.append(f'const CS_Only = {len(process.transitions)}')
 
     # Transform inner labels to floating labels
@@ -914,10 +926,10 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     # Generate the code of the Execute_Transition  procedure, if needed
     if process.transitions and not instance:
-        taste_template.append('proc Execute_Transition (Id : asn1SccSint) =')
+        taste_template.append('proc Execute_Transition (Id : asn1SccSint): void =')
         taste_template.append('var trId : asn1SccSint = Id')
         if has_cs:
-            taste_template.append('Message_Pending : asn1bool = true')
+            taste_template.append('var Message_Pending : asn1bool = true')
 
         # Declare the local variables needed by the transitions in the template
         taste_template.extend(set(local_decl_transitions))
@@ -964,15 +976,17 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             if not settings.MONITORS:
                 taste_template.append('#  Process continuous signals')
                 taste_template.append(f'if {settings.LPREFIX}.init_done:')
-                taste_template.append("Check_Queue (Message_Pending)")
+                taste_template.append("Check_Queue (addr Message_Pending)")
                 taste_template.append('# end if')
                 if not generic:  # not a function type
-                    nim_decl_template.append('proc Check_Queue(): asn1bool')
+                    nim_decl_template.append(f'proc Check_Queue(p: ptr asn1bool): void = pass') # TODO
+                    # nim_decl_template.append(f'### {{.importc: "{process.name.lower()}_check_queue"}}')
+
                     # nim_decl_template.append(f'with Import, Convention => C, '
                     # f'Link_Name => "{process.name.lower()}_check_queue";')
             else:
                 taste_template.append('#  Process observer transitions')
-                taste_template.append("Message_Pending = False")
+                taste_template.append("Message_Pending = false")
         if has_cs:
             taste_template.extend(['if Message_Pending or trId != -1 :',
                                    'goto Next_Transition',
@@ -1033,7 +1047,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 need_final_endif = False
                 first = "el" if done else ""
                 taste_template.append(
-                    f'{first}if {settings.LPREFIX}.state == {settings.ASN1SCC}{statename}:')
+                    f'{first}if {settings.LPREFIX}.state == {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{statename}:')
             # Change priority 0 (no priority set) to lowest priority
             if cs_item:
                 lowest_priority = max(item.priority for item in cs_item)
@@ -1098,13 +1112,13 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     # ri_stub_src.append(f'# end {process.name}_RI;')
     ri_stub_src.append("\n")
 
-    with open(process.name.lower() + os.extsep + 'nim', 'wb') as nim_file:
+    with open(process.name + os.extsep + 'nim', 'wb') as nim_file:
         code = '\n'.join(format_nim_code(nim_decl_template)).encode('latin1')
         code += '\n'.join(format_nim_code(taste_template)).encode('latin1')
         nim_file.write(code)
 
     if not taste:
-        ri_file = f"{process.name.lower()}_RI.nim"
+        ri_file = f"{process.name}_RI.nim"
         ri_code = "\n".join(format_nim_code(ri_stub_decl)) + "\n\n\n" + "\n".join(format_nim_code(ri_stub_src))
 
         # don't overwrite adb as it may contain user code
@@ -1126,7 +1140,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         process_instance.cs_mapping = process.cs_mapping
         generate(process_instance, simu, instance=True, taste=taste)
 
-    generate_nim_definitions(process.name, process.filename, output_dir)
+    generate_nim_definitions(process.name, process.filename, output_dir, hashcode=hash(process))
 
     os.chdir(cwd)
 
@@ -1281,7 +1295,7 @@ def _call_external_function(output, **kwargs) -> str:
                             and not basic_param.kind.startswith('asn1SccSint'):
                         pass # Already appended code
                     else:
-                        code.append(f'{tmp_id} = {p_id}' + '[]'*((not param.is_raw) and isinstance(param, ogAST.PrimFPAR)))
+                        code.append(f'{tmp_id} = {p_id}') #+ '[]'*((not param.is_raw) and isinstance(param, ogAST.PrimFPAR)))
                     list_of_params.append(tmp_id)
                 else:
                     # Output parameters/local variables
@@ -1319,19 +1333,27 @@ def _call_external_function(output, **kwargs) -> str:
                     else:
                         p_id = array_content(param, p_id, basic_param)
 
-                elif param.is_raw:
+                elif param.is_raw or isinstance(param, ogAST.PrimCall):
                     local_decl.append(f"var tmp_raw_{param.tmpVar}: {type_name(param.exprType)}")
                     p_code.append(f"tmp_raw_{param.tmpVar} = {p_id}")
-                    p_id = f"tmp_raw_{param.tmpVar}"
+                    p_id = f"addr tmp_raw_{param.tmpVar}"
+
+                else:
+                    p_id = f"addr {p_id}"
+
+                if type_name(param.exprType) == type_name(proc.fpar[idx]['type']):
+                    pass
+                else:
+                    p_id = f"cast[ptr {type_name(proc.fpar[idx]['type'])}]({p_id})"
 
                 code.extend(p_code)
                 local_decl.extend(p_local)
                 # no need to use temporary variables, we are in pure Ada
-                list_of_params.append(f"addr {p_id}")
+                list_of_params.append(p_id)
             if list_of_params:
                 code.append(f'p{settings.SEPARATOR}{proc.inputString}({", ".join(list_of_params)})')
             else:
-                code.append(f'p{settings.SEPARATOR}{proc.inputString}')
+                code.append(f'p{settings.SEPARATOR}{proc.inputString}()')
     return code, local_decl
 
 
@@ -1500,8 +1522,8 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
         q_stmts, q_str, q_decl = expression(dec.question, readonly=1)
 
         # Function parameters are pointers, so dereference them
-        if isinstance(dec.question, ogAST.PrimFPAR) and not dec.question.is_raw:
-            q_str = f"{q_str}[]"
+        # if isinstance(dec.question, ogAST.PrimFPAR) and not dec.question.is_raw:
+        q_str = f"{q_str}"
 
 
         # Add code-to-model traceability
@@ -1580,29 +1602,39 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
                                 code.extend([
                                     f"tmp_{actual_type}_{dec.tmpVar}{postfix} = {ans_str}"
                                 ])
+                                if postfix and postfix.startswith('.arr['):
+                                    code.append(
+                                        f"tmp_{actual_type}_{dec.tmpVar}.nCount = {int(constant.exprType.Min)}"
+                                    )
                                 ans_str = f"tmp_{actual_type}_{dec.tmpVar}"
 
                         if question_basic in ('IA5StringType', ):
                             ptr = False
                         else:
                             ptr = True
-                            # if constant.is_raw:
-                                # local_decl.append(f"var tmp_{actual_type}_{dec.tmpVar}: {actual_type}")
-                            if int(cbty.Min) > 1 or int(cbty.Max) > 1:
-                                postfix = ''
-                                if isinstance(constant, ogAST.PrimStringLiteral):
-                                    postfix = f'.arr[0 ..< {constant.exprType.Min}]'
-                                elif constant.expr.is_raw:
-                                    postfix = '.arr'
-                                code.extend([
-                                    f"tmp_{actual_type}_{dec.tmpVar}{postfix} = {ans_str}"
-                                ])
+                            if ans_str != f"tmp_{actual_type}_{dec.tmpVar}":
+                                # if constant.is_raw:
+                                    # local_decl.append(f"var tmp_{actual_type}_{dec.tmpVar}: {actual_type}")
+                                if int(cbty.Min) > 1 or int(cbty.Max) > 1:
+                                    postfix = ''
+                                    if isinstance(constant, ogAST.PrimStringLiteral):
+                                        postfix = f'.arr[0 ..< {constant.exprType.Min}]'
+                                    elif constant.expr.is_raw:
+                                        postfix = '.arr'
 
-                            else:
-                                code.extend([
-                                    f"tmp_{actual_type}_{dec.tmpVar} = {ans_str}"
-                                ])
-                            ans_str = f"tmp_{actual_type}_{dec.tmpVar}"
+                                    code.append(
+                                        f"tmp_{actual_type}_{dec.tmpVar}{postfix} = {ans_str}"
+                                    )
+                                    if postfix and postfix.startswith('.arr['):
+                                        code.append(
+                                            f"tmp_{actual_type}_{dec.tmpVar}.nCount = {ans_str}"
+                                        )
+
+                                else:
+                                    code.extend([
+                                        f"tmp_{actual_type}_{dec.tmpVar} = {ans_str}"
+                                    ])
+                                ans_str = f"tmp_{actual_type}_{dec.tmpVar}"
 
                         exp += f'{sub_sep} {actual_type}_Equal({"addr"*ptr} tmp{dec.tmpVar}, {"addr"*ptr} {ans_str})'
                         # if op == ogAST.ExprNeq:
@@ -1747,7 +1779,7 @@ def _transition(tr, **kwargs):
                         code.append(f'{settings.LPREFIX}.{tr.terminator.substate}{settings.SEPARATOR}state ='
                                     f' {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{tr.terminator.inputString.lower()}')
                     # Call the START function of the state aggregation
-                    code.append(f'{tr.terminator.next_id}')
+                    code.append(f'{tr.terminator.next_id}()')
                     code.append('trId = -1')
                 elif not history:
                     code.append(f'trId = {str(tr.terminator.next_id)}')
@@ -1773,8 +1805,8 @@ def _transition(tr, **kwargs):
                                     statement = ns != '-*' and f'{nid}' or 'trId = -1'
                                 else:
                                     statement = f'trId = {nid}'
-                                states_prefix = (f"{settings.ASN1SCC}{s}" for s in sta)
-                                joined_states = " | ".join(states_prefix)
+                                states_prefix = (f"{settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_States_{s}" for s in sta)
+                                joined_states = ", ".join(states_prefix)
                                 code.extend(
                                     [f'of {joined_states}:',
                                      statement])
@@ -1899,8 +1931,9 @@ def _inner_procedure(proc, **kwargs):
         # Inner procedures declared external by the user: pragma import
         # the C symbol with the same name. Overrules the pragma import from
         # taste for required interfaces.
-        local_decl.append(f'pragma Import (C, p{settings.SEPARATOR}{proc.inputString}, '
-                          f'"{proc.inputString}")') # TODO
+        # local_decl.append(f'pragma Import (C, p{settings.SEPARATOR}{proc.inputString}, '
+        #                   f'"{proc.inputString}")') # TODO
+        pass
     else:
         # Generate the code for the procedure itself
         # local variables and code of the START transition
