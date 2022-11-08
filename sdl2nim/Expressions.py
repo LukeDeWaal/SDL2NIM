@@ -44,8 +44,8 @@ def string_payload(prim, nim_string):
     return __string_payload(prim, nim_string, settings.TYPES)
 
 
-def array_content(prim, values, asnty):
-    return __array_content(prim, values, asnty, expression)
+def array_content(prim, values, asnty, pad_zeros=False):
+    return __array_content(prim, values, asnty, pad_zeros)
 
 
 def type_name(a_type, use_prefix=True):
@@ -196,7 +196,7 @@ def _prim_call(prim, **kwargs):
         stmts.extend(param_stmts)
         local_decl.extend(local_var)
 
-        nim_string += f"num({param_str})"
+        nim_string += f"(num({param_str})).{type_name(prim.exprType)}"
 
     elif func == 'exist':
         exp = params[0]
@@ -1407,6 +1407,7 @@ def _sequence(seq, **kwargs):
         # Find the basic type of the elem: if it is a number and the value
         # is an octet/bit string literal, then use the raw number
         elem_bty = find_basic_type(elem_specty)
+        elem_typename = type_name(elem_specty)
 
         value_stmts, value_str, local_var = expression(value, readonly=1)
 
@@ -1419,7 +1420,12 @@ def _sequence(seq, **kwargs):
             elif elem_bty.kind == 'IA5StringType':
                 value_str = ia5string_raw(value, fill=True)
             else:
-                value_str = array_content(value, value_str, elem_bty)
+                if isinstance(value, ogAST.PrimStringLiteral):
+                    S = len(value_str.split(','))
+                else:
+                    S = len(value.value)
+                value_str = f"{elem_typename}(nCount: {S}, arr: {array_content(value, value_str, elem_bty, pad_zeros=True)})"
+
 
         if elem.lower() in optional_fields:
             # Set optional field presence
@@ -1432,12 +1438,13 @@ def _sequence(seq, **kwargs):
         counter += 1
     # Process optional fields
     if optional_fields:
-        present_fields = list((fd_name, fd_data['ref'])
-                              for fd_name, fd_data in optional_fields.items()
-                              if fd_data['present'])
+        # present_fields = list((fd_name, fd_data['ref'])
+        #                       for fd_name, fd_data in optional_fields.items()
+        #                       if fd_data['present'])
 
         nim_string += ", "
-        nim_string += f"exist: {type_name(seq.exprType)}_exist({', '.join([f'{varname}: 1' for varname, _dat in present_fields ])})"
+        fields = ', '.join([f'{varname}: {int(_dat["present"])}' for varname, _dat in optional_fields.items()])
+        nim_string += f"exist: {type_name(seq.exprType)}_exist({fields})"
 
     # stmts.extend([
     #     f"%s.exist.{varname} = 1" for varname, _dat in present_fields
@@ -1452,7 +1459,11 @@ def _sequence_of(seqof, **kwargs):
     stmts, local_decl = [], []
     seqof_ty = seqof.exprType
     try:
-        asn_type = find_basic_type(settings.TYPES[seqof_ty.ReferencedTypeName].type)
+        # asn_type = find_basic_type(settings.TYPES[seqof_ty.ReferencedTypeName].type)
+        sortref = settings.TYPES[seqof.expected_type.ReferencedTypeName]
+        while (hasattr(sortref, "type")):
+            sortref = sortref.type
+        asn_type = find_basic_type(sortref)
     except AttributeError:
         asn_type = None
         min_size, max_size = seqof_ty.Min, seqof_ty.Max
@@ -1463,13 +1474,25 @@ def _sequence_of(seqof, **kwargs):
             asn_type = find_basic_type(sortref)
     tab = []
     for i in range(len(seqof.value)):
-        item_stmts, item_str, local_var = expression(seqof.value[i],
-                                                     readonly=1)
-        if isinstance(seqof.value[i],
-                      (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
-            item_str = array_content(seqof.value[i], item_str, asn_type or
-                                     find_basic_type(seqof.value[i].exprType))
-        elif isinstance(seqof.value[i], ogAST.PrimSubstring):
+        value = seqof.value[i]
+        item_stmts, item_str, local_var = expression(value, readonly=1)
+
+        bty = find_basic_type(seqof.expected_type)
+        rbty = type_name(bty.type)
+        if isinstance(value, (ogAST.PrimStringLiteral)):
+
+            item_str = array_content(value, item_str, asn_type or find_basic_type(value.exprType), pad_zeros=True)
+            if hasattr(bty, 'Max') and bty.Min != bty.Max:
+                S = len(value.inputString.strip("'"))
+                item_str = f"{rbty}(nCount: {S}, arr: {item_str})"
+
+        elif isinstance(value, ogAST.PrimSequenceOf):
+            item_str = array_content(value, item_str, asn_type or find_basic_type(value.exprType), pad_zeros=True)
+            if hasattr(bty, 'Max') and bty.Min != bty.Max:
+                S = len(value.value)
+                item_str = f"{rbty}(nCount: {S}, arr: {item_str})"
+
+        elif isinstance(value, ogAST.PrimSubstring):
             # Put substring elements in a local variable, otherwise they may
             # not work well with some operators (e.g. Append)
             tmpVarName = f'tmp{seqof.value[i].tmpVar}'

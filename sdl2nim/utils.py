@@ -105,6 +105,44 @@ def is_local(var, local_var):
     return var in (loc for loc in local_var.keys())
 
 
+def split_with_brackets(string: str, delim: str, brackets: list):
+    """
+    Split string by delimiter preserving brackets
+    """
+    idx = 0
+    prev = 0
+    chunks = []
+    open_brackets = 0
+    while idx < len(string):
+        character = string[idx]
+
+        if character == delim:
+            if open_brackets > 0:
+                idx += 1
+            else:
+                chunk = string[prev: idx].strip()
+                chunks.append(chunk)
+                idx = idx + 1
+                prev = idx
+            continue
+
+        for b_left, b_right in brackets:
+            if character == b_left:
+                open_brackets += 1
+                break
+            elif character == b_right:
+                open_brackets -= 1
+                break
+            else:
+                continue
+
+        idx += 1
+        if idx == len(string):
+            chunks.append(string[prev : ].strip())
+
+    return chunks
+
+
 def type_name(a_type, use_prefix=True, prefix=settings.ASN1SCC):
     ''' Check the type kind and return a Nim usable type name '''
     if a_type.kind == 'ReferenceType':
@@ -160,7 +198,7 @@ def string_payload(prim, nim_string, TYPES):
     return payload
 
 
-def array_content(prim, values, asnty, expression: callable):
+def array_content(prim, values, asnty, pad_zeros):
     ''' String literal and SEQOF are given as a sequence of elements ;
     this function builds the Ada string needed to fit it in an ASN.1 array
     i.e. convert "1,2,3" to "Data => (1,2,3, others=>0), [Length => 3]"
@@ -177,9 +215,9 @@ def array_content(prim, values, asnty, expression: callable):
     # first_val = split_vals[0]
     if isinstance(prim, ogAST.PrimStringLiteral):
         if asnty.kind.startswith('Octet'):
-            split_vals = [f"{s}.byte" for s in split_vals]
+            split_vals = [f"{s}.byte" for s in split_vals] + pad_zeros*['0.byte' for _ in range(int(float(asnty.Max)) - len(split_vals))]
         else:
-            split_vals = [f"{s}.char" for s in split_vals]
+            split_vals = [f"{s}.char" for s in split_vals] + pad_zeros*['0.char' for _ in range(int(float(asnty.Max)) - len(split_vals))]
     elif isinstance(prim, ogAST.PrimVariable):
         if asnty.kind == 'SequenceOfType':
             if asnty.Min == asnty.Max:
@@ -188,6 +226,10 @@ def array_content(prim, values, asnty, expression: callable):
                 return f"{values}.arr[0 ..< {values}.nCount]"
         else:
             return values
+    elif isinstance(prim, ogAST.PrimSequenceOf):
+        split_vals = split_with_brackets(values, ",", ["[]", "()"])
+        if pad_zeros:
+            split_vals += [f"{type_name(asnty.type)}()" for _ in range(int(float(prim.expected_type.Max)) - len(split_vals))]
     else:
         try:
             T = type_name(asnty.type)
