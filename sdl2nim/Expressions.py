@@ -1525,13 +1525,19 @@ def _choiceitem(choice, **kwargs):
 
     chbty = find_basic_type(choice.exprType)
     bty = find_basic_type(choice.value['value'].exprType)
-
+    value = choice.value['value']
     if isinstance(choice.value['value'], (ogAST.PrimSequenceOf,
                                           ogAST.PrimStringLiteral)):
         if bty.kind.startswith('Integer'):
             choice_str = choice.value['value'].numeric_value
         else:
-            choice_str = array_content(choice.value['value'], choice_str, bty)
+            elem_typename = type_name(choice.value['value'].expected_type)
+            elem_bty = find_basic_type(choice.value['value'].expected_type)
+            if isinstance(value, ogAST.PrimStringLiteral):
+                S = len(choice_str.split(','))
+            else:
+                S = len(value.value)
+            choice_str = f"{elem_typename}(nCount: {S}, arr: {array_content(value, choice_str, elem_bty, pad_zeros=True)})"
 
     elif isinstance(choice.value['value'], ogAST.PrimEmptyString):
         choice_str = f"{type_name(choice.value['value'].exprType)}()"

@@ -288,12 +288,12 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                     #dstr = f'{variable_type.replace("-", "_")}_{dstr}'
                     pass
 
-                if isinstance(def_value, (ogAST.PrimChoiceItem, ogAST.PrimSequence)):
-
-                    if dst:  # Hacky way to initialize anonymous Choice types
-                        while dst and "%" in dst[0]:
-                            post_actions.append(dst.pop(0) % (settings.LPREFIX + "." + var_name))
-                        dst = []
+                # if isinstance(def_value, (ogAST.PrimChoiceItem, ogAST.PrimSequence)):
+                #
+                #     if dst:  # Hacky way to initialize anonymous Choice types
+                #         while dst and "%" in dst[0]:
+                #             post_actions.append(dst.pop(0) % (settings.LPREFIX + "." + var_name))
+                #         dst = []
 
                 assert not dst and not dlocal, \
                     'DCL: Expecting a ground expression'
