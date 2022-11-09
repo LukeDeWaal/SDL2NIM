@@ -227,9 +227,21 @@ def array_content(prim, values, asnty, pad_zeros):
         else:
             return values
     elif isinstance(prim, ogAST.PrimSequenceOf):
+        if hasattr(asnty, 'type'):
+            T = type_name(asnty.type)
+            need_cast = __find_basic_type(settings.TYPES,asnty.type).kind.startswith('Integer')
+        elif hasattr(prim, 'expected_type'):
+            T = type_name(prim.expected_type)
+            need_cast = __find_basic_type(settings.TYPES, asnty).kind.startswith('Integer')
+        else:
+            T = type_name(prim.exprType)
+            need_cast = __find_basic_type(settings.TYPES, asnty).kind.startswith('Integer')
+
         split_vals = split_with_brackets(values, ",", ["[]", "()"])
+        if need_cast:
+            split_vals = [f"{s}.{T}" for s in split_vals]
         if pad_zeros:
-            split_vals += [f"{type_name(asnty.type)}()" for _ in range(int(float(prim.expected_type.Max)) - len(split_vals))]
+            split_vals += [f"{T}()" for _ in range(int(float(prim.expected_type.Max)) - len(split_vals))]
     else:
         try:
             T = type_name(asnty.type)

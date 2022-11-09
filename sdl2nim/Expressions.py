@@ -1477,8 +1477,19 @@ def _sequence_of(seqof, **kwargs):
         value = seqof.value[i]
         item_stmts, item_str, local_var = expression(value, readonly=1)
 
-        bty = find_basic_type(seqof.expected_type)
-        rbty = type_name(bty.type)
+        if hasattr(seqof, 'expected_type'):
+            bty = find_basic_type(seqof.expected_type)
+        else:
+            bty = find_basic_type(seqof.exprType)
+
+        if hasattr(bty, 'type'):
+            rbty = type_name(bty.type)
+        elif hasattr(seqof, 'expected_type'):
+            rbty = type_name(seqof.expected_type)
+        else:
+            rbty = type_name(seqof.exprType)
+
+
         if isinstance(value, (ogAST.PrimStringLiteral)):
 
             item_str = array_content(value, item_str, asn_type or find_basic_type(value.exprType), pad_zeros=True)
