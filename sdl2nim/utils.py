@@ -181,11 +181,15 @@ def type_name(a_type, use_prefix=True, prefix=settings.ASN1SCC):
 def string_payload(prim, nim_string, TYPES):
     ''' Return the data buffer of string, including range computed according
         to the length, if the string has a variable size '''
-    if isinstance(prim, ogAST.PrimSubstring):
-        return ''
     prim_basic = __find_basic_type(TYPES, prim.exprType)
     payload = ''
-    if prim_basic.kind in ('OctetStringType', 'BitStringType'):
+    if isinstance(prim, ogAST.PrimSubstring):
+        if prim_basic.Min == prim_basic.Max:
+            payload = f".arr"
+        else:
+            payload = f".arr[0 ..<  {nim_string}.nCount]"
+
+    elif prim_basic.kind in ('OctetStringType', 'BitStringType'):
         if int(prim_basic.Min) != int(prim_basic.Max):
             payload = f'[0 ..< len({nim_string})]'
         else:
@@ -214,7 +218,9 @@ def array_content(prim, values, asnty, pad_zeros):
     split_vals = values.split(', ')
     # first_val = split_vals[0]
     if isinstance(prim, ogAST.PrimStringLiteral):
-        if asnty.kind.startswith('Octet'):
+        if prim.value == "''":
+            split_vals = []
+        elif asnty.kind.startswith('Octet'):
             split_vals = [f"{s}.byte" for s in split_vals] + pad_zeros*['0.byte' for _ in range(int(float(asnty.Max)) - len(split_vals))]
         else:
             split_vals = [f"{s}.char" for s in split_vals] + pad_zeros*['0.char' for _ in range(int(float(asnty.Max)) - len(split_vals))]
@@ -438,7 +444,7 @@ def format_nim_code(stmts):
                 indent = indent
             else:
                 indent = max(indent - 1, 0)
-        if elems and elems[0].startswith(('elif', 'else', 'of')):
+        if elems and elems[0].startswith(('elif', 'else', 'of')) and 'return' not in format_nim_code.prev:
             indent = max(indent - 1, 0)
         if elems and elems[0] == '#' and 'end' in elems[1] and not format_nim_code.prev.startswith(('# end label', 'return')):
             indent = max(indent - 1, 0)

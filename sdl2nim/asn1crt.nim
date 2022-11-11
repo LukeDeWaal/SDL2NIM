@@ -199,11 +199,17 @@ proc `=>`*(a, b: bool): bool =
     # Implies operator
     result = ((not a) or b)
 
-proc `//`*[T](a, b: T): T =
-    # Append operator
-    result.nCount = a.nCount + b.nCount
-    result.arr[0 ..< a.nCount] = a.arr[0 ..< a.nCount]
-    result.arr[a.nCount ..< a.nCount + b.nCount] = b.arr[0 ..< b.nCount]
+proc `//`*[T, N](a: T, b: N): T =
+    # Append operator for appending single element. Single element must be on right-hand side.
+    when $(N) == $(typeof(a.arr[0])):
+      result.nCount = a.nCount + 1
+      result.arr[0 ..< a.nCount] = a.arr[0 ..< a.nCount]
+      result.arr[a.nCount + 1] = b
+    else:
+      # Append operator for same type, or different types with same primitive type
+      result.nCount = a.nCount + b.nCount
+      result.arr[0 ..< a.nCount] = a.arr[0 ..< a.nCount]
+      result.arr[a.nCount ..< result.nCount] = b.arr[0 ..< b.nCount]
 
 proc num*[T: Ordinal | enum](v: T): asn1SccSint =
-  return ord(v).asn1SccSint
+    return ord(v).asn1SccSint

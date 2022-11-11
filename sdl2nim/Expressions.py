@@ -377,6 +377,14 @@ def _prim_call(prim, **kwargs):
             elif isinstance(param, ogAST.PrimVariable):
                 param_str = f'addr {param_str}'
 
+            elif isinstance(param, (ogAST.PrimReal, ogAST.PrimInteger, ogAST.PrimBoolean)):
+                param_str = f"({param_str}).{type_name(param_type)}"
+
+            if param.is_raw:
+                local_decl.append(f"var tmp_param_{param.tmpVar}: {type_name(param_type)}")
+                param_stmt.append(f"tmp_param_{param.tmpVar} = {param_str}")
+                param_str = f"addr tmp_param_{param.tmpVar}"
+
             list_of_params.append(param_str)
             stmts.extend(param_stmt)
             local_decl.extend(local_var)
@@ -450,10 +458,15 @@ def _prim_substring(prim, **kwargs):
     local_decl.extend([
         f"var tmp{prim.tmpVar}: {type_name(prim.exprType)}"
     ])
-    stmts.extend([
-        f"tmp{prim.tmpVar}.nCount = ({r2_string} - {r1_string}).cint",
-        f"tmp{prim.tmpVar}.arr[0 ..< tmp{prim.tmpVar}.nCount] = {receiver_string}.arr[{r1_string} ..< {r2_string}]"
-    ])
+
+    bty = find_basic_type(prim.exprType)
+    if bty.Min != bty.Max:
+        stmts.extend([
+            f"tmp{prim.tmpVar}.nCount = ({r2_string} - {r1_string}).cint",
+            f"tmp{prim.tmpVar}.arr[0 ..< tmp{prim.tmpVar}.nCount] = {receiver_string}.arr[{r1_string} ..< {r2_string}]"
+        ])
+    else:
+        stmts.append(f"tmp{prim.tmpVar}.arr[0 ..< ({r2_string} - {r1_string})] = {receiver_string}.arr[{r1_string} ..< {r2_string}]")
     nim_string = f"tmp{prim.tmpVar}"
 
     return stmts, str(nim_string), local_decl
@@ -679,8 +692,14 @@ def _equality(expr, **kwargs):
         elif isinstance(expr.right, ogAST.PrimStringLiteral) and isinstance(expr.left, ogAST.PrimStringLiteral):
             nim_string = f'{left_str} {operand} {right_str}'
 
+        elif rbty.kind == lbty.kind: # lbty.kind in ('SequenceType', 'ChoiceType', ) and
+            if lbty == rbty:
+                nim_string = f"({left_str} {operand} {right_str})"
+            else:
+                raise TypeError(f"Cannot Compare Types: {type_name(expr.left.exprType)} and {type_name(expr.right.exprType)}")
+
         else:
-            print(f"Cannot Compare Types: {lbty.kind} and {rbty.kind}", file=sys.stderr)  # TODO
+            raise TypeError(f"Cannot Compare Types: {lbty.kind} and {rbty.kind}")  # TODO
 
     return code, str(nim_string), local_decl
 
@@ -713,11 +732,15 @@ def _assign_expression(expr, **kwargs):
             if not isinstance(expr.left, ogAST.PrimSubstring):
                 # only if left is not a substring, otherwise syntax
                 # would be wrong due to result of _prim_substring
-                if basic_left.kind == basic_right.kind == 'OctetStringType':
+                if basic_left.kind == basic_right.kind and basic_left.kind in ('OctetStringType', 'SequenceOfType',):
                     strings.append(f"{left_str} = {right_str}")
                     rlen = ''
-                else:
-                    strings.append(f"{left_str}.arr[0 ..< {right_str}.len] = {right_str}")
+                elif basic_left.kind == basic_right.kind:
+                    if basic_left.Min != basic_left.Max:
+                        strings.append(f"{left_str}.arr[0 ..< {right_str}.nCount] = {right_str}")
+                        rlen = ''
+                    else:
+                        strings.append(f"{left_str}.arr[0 ..< {right_str}.len] = {right_str}")
             else:
                 # left is substring: no length, direct assignment
                 rlen = ""
@@ -726,14 +749,14 @@ def _assign_expression(expr, **kwargs):
         elif isinstance(expr.right, ogAST.ExprAppend):
             if (left_str in right_str) or (not right_str.startswith('tmp')):
                 rlen = append_size(expr.right)
-                strings.append("{lvar}.arr[0 ..< {lstr}] = {rvar}".format(lvar=left_str,
-                                                                          rvar=right_str,
-                                                                          lstr=rlen))
+                strings.append("{lvar} = {rvar}".format(lvar=left_str,
+                                                      rvar=right_str,
+                                                      lstr=rlen))
             else:
                 rlen = f"tmp{expr.right.tmpVar}.nCount"
-                strings.append("{lvar}.arr[0 ..< {lstr}] = {rvar}".format(lvar=left_str,
-                                                                          rvar=right_str,
-                                                                          lstr=rlen))
+                strings.append("{lvar} = {rvar}".format(lvar=left_str,
+                                                      rvar=right_str,
+                                                      lstr=rlen))
 
         elif isinstance(expr.right, (ogAST.PrimSequenceOf,
                                      ogAST.PrimStringLiteral)):
@@ -741,7 +764,10 @@ def _assign_expression(expr, **kwargs):
                 content = array_content(expr.right, right_str, basic_left)
                 if basic_left.Min != basic_left.Max:
                     if basic_left.kind == 'OctetStringType':
-                        newlen = len(right_str.split(","))
+                        if right_str:
+                            newlen = len(right_str.split(","))
+                        else:
+                            newlen = 0
                     else:
                         newlen = len(expr.right.value)
                     strings.extend([
@@ -1007,7 +1033,10 @@ def _append(expr, **kwargs):
 
     right_self_standing = False
     left_self_standing = isinstance(expr.left,
-                                    (ogAST.PrimVariable, ogAST.PrimConstant, ogAST.PrimSubstring))
+                                    (ogAST.PrimVariable,
+                                     ogAST.PrimConstant,
+                                     ogAST.PrimSubstring,
+                                     ogAST.ExprAppend))
 
     left = '{}{}'.format(left_str,
                          string_payload(expr.left, left_str)
@@ -1015,13 +1044,18 @@ def _append(expr, **kwargs):
 
     if isinstance(expr.right, (ogAST.PrimVariable,
                                ogAST.PrimConditional,
-                               ogAST.PrimConstant)):
+                               ogAST.PrimConstant,
+                               ogAST.ExprAppend)):
         payload = string_payload(expr.right, right_str)
         right_self_standing = True
     else:
         payload = ''
 
-    if isinstance(expr.right, ogAST.PrimSubstring):
+    if isinstance(expr.right, ogAST.PrimSubstring) or \
+        ('mkstring' in expr.right.inputString
+         and isinstance(expr.right, ogAST.PrimSequenceOf)
+         and isinstance(expr.right.value[0], ogAST.PrimSubstring)
+         and len(expr.right.value) == 1):
         right_self_standing = True
 
     right = '{}{}'.format(right_str, payload)
@@ -1059,16 +1093,17 @@ def _append(expr, **kwargs):
         else:
             raise ValueError("Expected at least one SeqOf")
 
-        stmts.append(f"tmp{expr.tmpVar}.nCount += {size}")
+        stmts.append(f"tmp{expr.tmpVar}.nCount = {size}")
         stmts.extend(concat)
-        nim_string = f"tmp{expr.tmpVar}.arr[0 ..< {size}]"
+        nim_string = f"tmp{expr.tmpVar}"
 
     elif right_self_standing and left_self_standing:
-        nim_string = f"({left_str} // {right_str}).arr[0 ..< {left_str}.nCount + {right_str}.nCount]"
+        nim_string = f"({left_str} // {right_str})"
 
     else:
         local_decl.extend([
-            f"var tmp{expr.tmpVar}: {name_of_type}"
+            f"var tmp{expr.tmpVar}: {name_of_type}",
+            f"var tmp_out_{expr.tmpVar}: {name_of_type}"
         ])
         if right_self_standing and not isinstance(expr.left, ogAST.ExprAppend):
             if isinstance(expr.left, ogAST.PrimStringLiteral):
@@ -1078,8 +1113,9 @@ def _append(expr, **kwargs):
             stmts.extend([
                 f"tmp{expr.tmpVar}.nCount = {len(val)}.cint",
                 f"tmp{expr.tmpVar}.arr[0 ..< {len(val)}] = {left_arr}",
+                f"tmp_out_{expr.tmpVar} = tmp{expr.tmpVar} // {right_str}"
             ])
-            nim_string = f"(tmp{expr.tmpVar} // {right_str}).arr[0 ..< tmp{expr.tmpVar}.nCount + {right_str}.nCount]"
+            nim_string = f"tmp_out_{expr.tmpVar}"
 
         elif left_self_standing and not isinstance(expr.right, ogAST.ExprAppend):
             if isinstance(expr.right, ogAST.PrimStringLiteral):
@@ -1089,8 +1125,9 @@ def _append(expr, **kwargs):
             stmts.extend([
                 f"tmp{expr.tmpVar}.nCount = {len(val)}.cint",
                 f"tmp{expr.tmpVar}.arr[0 ..< {len(val)}] = {right_arr}",
+                f"tmp_out_{expr.tmpVar} = {left_str} // tmp{expr.tmpVar}"
             ])
-            nim_string = f"({left_str} // tmp{expr.tmpVar}).arr[0 ..< {left_str}.nCount + tmp{expr.tmpVar}.nCount]"
+            nim_string = f"tmp_out_{expr.tmpVar}"
 
         else:
             if isinstance(expr.left, ogAST.ExprAppend):
@@ -1099,7 +1136,7 @@ def _append(expr, **kwargs):
                 right_str = right_str.split(".arr")[0]
             else:
                 raise TypeError("Unexpected Input")
-            nim_string = f"({left_str} // {right_str}).arr[0 ..< {append_size(expr)}]"
+            nim_string = f"({left_str} // {right_str})"
 
     return stmts, str(nim_string), local_decl
 
@@ -1248,6 +1285,7 @@ def _empty_string(primary, **kwargs):
 
 @expression.register(ogAST.PrimStringLiteral)
 @expression.register(ogAST.PrimOctetStringLiteral)
+@expression.register(ogAST.PrimBitStringLiteral)
 def _string_literal(primary, **kwargs):
     ''' Generate code for a string (Octet String) '''
     basic_type = find_basic_type(primary.exprType)
@@ -1255,9 +1293,12 @@ def _string_literal(primary, **kwargs):
     # then convert the string to an array of unsigned_8 integers
     # as expected by the Nim type corresponding to Octet String
 
-    if isinstance(primary, ogAST.PrimOctetStringLiteral):
+    if isinstance(primary, (ogAST.PrimOctetStringLiteral, ogAST.PrimBitStringLiteral)):
         # Hex string used as input
-        unsigned_8 = [str(x) for x in primary.hexstring]
+        if len(primary.hexstring) > 0:
+            unsigned_8 = [str(x) for x in primary.hexstring]
+        else:
+            unsigned_8 = [str(primary.numeric_value)]
     else:
         unsigned_8 = [str(ord(val)) for val in primary.value[1:-1]]
 
@@ -1271,7 +1312,7 @@ def _constant(primary, **kwargs):
     if primary.constant_c_name == 'pi':
         return [], str(primary.constant_c_name), [f'const {primary.constant_c_name} = {primary.constant_value}']
     else:
-        return [], str(primary.constant_c_name), []
+        return [], primary.exprType.AsnFile.split('.')[0] + '.' + str(primary.constant_c_name), []
 
 
 @expression.register(ogAST.PrimMantissaBaseExp)
@@ -1489,32 +1530,43 @@ def _sequence_of(seqof, **kwargs):
         else:
             rbty = type_name(seqof.exprType)
 
+        basics = (
+            'IntegerType',
+            'Integer32Type',
+            'IntegerU8Type',
+            'BooleanType',
+            'RealType',
+            'EnumeratedType',
+            'ChoiceEnumeratedType')
 
         if isinstance(value, (ogAST.PrimStringLiteral)):
-
             item_str = array_content(value, item_str, asn_type or find_basic_type(value.exprType), pad_zeros=True)
-            if hasattr(bty, 'Max') and bty.Min != bty.Max:
+            if hasattr(bty, 'type') and bty.type.Min != bty.type.Max:
                 S = len(value.inputString.strip("'"))
                 item_str = f"{rbty}(nCount: {S}, arr: {item_str})"
+            elif hasattr(bty, 'type') and (bty.type.kind not in basics):
+                item_str = f"{rbty}(arr: {item_str})"
 
         elif isinstance(value, ogAST.PrimSequenceOf):
             item_str = array_content(value, item_str, asn_type or find_basic_type(value.exprType), pad_zeros=True)
-            if hasattr(bty, 'Max') and bty.Min != bty.Max:
+            if hasattr(bty, 'type') and bty.type.Min != bty.type.Max:
                 S = len(value.value)
                 item_str = f"{rbty}(nCount: {S}, arr: {item_str})"
+            elif hasattr(bty, 'type') and (bty.type.kind not in basics):
+                item_str = f"{rbty}(arr: {item_str})"
 
-        elif isinstance(value, ogAST.PrimSubstring):
+        elif isinstance(value, ogAST.PrimSubstring) and (not 'mkstring' in seqof.inputString and seqof.is_raw):
             # Put substring elements in a local variable, otherwise they may
             # not work well with some operators (e.g. Append)
-            tmpVarName = f'tmp{seqof.value[i].tmpVar}'
-            tmpVarSort = seqof.value[i].exprType
+            tmpVarName = f'tmp_substr_{value.tmpVar}'
+            tmpVarSort = value.exprType
             local_decl.append(f'var {tmpVarName} : {type_name(tmpVarSort)}')
             # To get a proper assignment we need to create an ExprAssign
             expr = ogAST.ExprAssign()
             expr.left = ogAST.PrimVariable()
             expr.left.value = [tmpVarName]
             expr.left.exprType = tmpVarSort
-            expr.right = seqof.value[i]
+            expr.right = value
             expr.right.exprType = tmpVarSort
             expr.exprType = tmpVarSort
             assign_stmt, _, assign_loc = expression(expr, readonly=1)
