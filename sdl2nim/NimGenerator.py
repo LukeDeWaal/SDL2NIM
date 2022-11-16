@@ -75,9 +75,9 @@ def write_statement(param, newline, sep=''):
                 # Octet string
                 last_it = ""
                 if isinstance(param, ogAST.PrimSubstring):
-                    range_str = f"0 ..< {string}.nCount" # TODO
+                    range_str = f"0 ..< {len(param.value[1]['substring'])}"
                 elif basic_type.Min == basic_type.Max:
-                    range_str = f"0 ..< len({string}.arr)" # TODO
+                    range_str = f"0 ..< len({string}.arr)"
                 else:
                     range_str = f"0 ..< {string}.nCount"
                 string += ".arr"
@@ -139,7 +139,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         process_instance = process
 
     options = kwargs.get('options', {})
-    output_dir = options.get('output_dir', default='.')
+    output_dir = options.get('output_dir', '.')
 
     settings.PROCESS_NAME = process.name
 
@@ -222,6 +222,12 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 f"return ord(Src).{settings.ASN1SCC}Sint32 ",
                 "# end To_Choice_selection\n"
             ])
+
+    formal_parameter_decl = []
+
+    for par in process.fpar:
+        # TODO: Not sure how to handle FPAR at process level. Declare as variables for now.
+        formal_parameter_decl.append(f"var {par['name']}: {type_name(par['type'])}")
 
     # Generate the code to declare process-level context
     context_decl = []
@@ -354,25 +360,25 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             context_decl.append(f"{alias_name} : {type_name(alias_sort)} "
                                 f"renames {qualified}")  # TODO
 
-            # Add SDL constants (synonyms)
-            for const in process.DV.SDL_Constants.values():
-                bkind = find_basic_type(const.type).kind
-                if bkind in ('IntegerType', 'RealType', 'EnumeratedType',
-                             'BooleanType', 'Integer32Type', 'IntegerU8Type'):
-                    val = const.value
+        # Add SDL constants (synonyms)
+        for const in process.DV.SDL_Constants.values():
+            bkind = find_basic_type(const.type).kind
+            if bkind in ('IntegerType', 'RealType', 'EnumeratedType',
+                         'BooleanType', 'Integer32Type', 'IntegerU8Type'):
+                val = const.value
+            else:
+                # complex value - must be a ground expression
+                _, val, _ = expression(const.value, readonly=1)
+                if bkind in ('SequenceOfType', 'OctetStringType', 'BitStringType'):
+                    val = array_content(const.value, val, bkind)
+                elif bkind == 'IA5StringType':
+                    val = ia5string_raw(const.value)
                 else:
-                    # complex value - must be a ground expression
-                    _, val, _ = expression(const.value, readonly=1)
-                    if bkind in ('SequenceOfType', 'OctetStringType', 'BitStringType'):
-                        val = array_content(const.value, val, bkind)
-                    elif bkind == 'IA5StringType':
-                        val = ia5string_raw(const.value)
-                    else:
-                        raise f'ERROR: constant {const.varName} value is not a ground expression'
+                    raise f'ERROR: constant {const.varName} value is not a ground expression'
 
-                const_sort = const.type.ReferencedTypeName.replace('-', '_')
-                context_decl.append(f"const {const.varName}:  {settings.ASN1SCC}{const_sort} = {val}")
-
+            const_sort = const.type.ReferencedTypeName.replace('-', '_')
+            context_decl.append(f"const {const.varName}:  {settings.ASN1SCC}{const_sort} = {val}")
+            settings.SYNONYMS.add(const.varName)
 
         # The choice selections will allow to use the present operator
         # together with a variable of the -selection type
@@ -526,6 +532,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     dll_api = []
     nim_decl_template.extend(rand_decl)
+    nim_decl_template.extend(formal_parameter_decl)
     if not instance:
         nim_decl_template.extend(context_decl)
 
@@ -879,15 +886,15 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         if not generic:
             procname = process.name.lower()
             nim_decl_template.extend([
-                f'proc SET_{timer} (Val : {settings.ASN1SCC}T_UInt32): {settings.ASN1SCC}T_UInt32 =',
+                f'proc SET_{timer}*(Val : {settings.ASN1SCC}T_UInt32): {settings.ASN1SCC}T_UInt32 =',
                 f'return {process.name}_RI.Set_{timer}(Val)'])
-            ri_stub_decl.append(f'proc SET_{timer} (Val : {settings.ASN1SCC}T_UInt32): {settings.ASN1SCC}T_UInt32')
+            ri_stub_decl.append(f'proc SET_{timer}*(Val : {settings.ASN1SCC}T_UInt32): {settings.ASN1SCC}T_UInt32')
             ri_stub_src.extend(
-                [f'proc SET_{timer} (Val : {settings.ASN1SCC}T_UInt32): {settings.ASN1SCC}T_UInt32 =', 'pass'])
-            nim_decl_template.extend([f'proc RESET_{timer}(): void =',
+                [f'proc SET_{timer}*(Val : {settings.ASN1SCC}T_UInt32): {settings.ASN1SCC}T_UInt32 =', 'pass'])
+            nim_decl_template.extend([f'proc RESET_{timer}*(): void =',
                                       f'{process.name}_RI.Reset_{timer}()', 'return'])
-            ri_stub_decl.append(f'proc RESET_{timer}')
-            ri_stub_src.extend([f'proc RESET_{timer}(): void =', 'pass'])
+            ri_stub_decl.append(f'proc RESET_{timer}*(): void')
+            ri_stub_src.extend([f'proc RESET_{timer}*(): void =', 'pass'])
         else:
             # Generic functions get the SET and RESET from template
             pass
@@ -895,41 +902,42 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     if instance: # TODO
         # Instance of a process type, all the RIs (including timers) must
         # be gathered to instantiate the package
-        pkg_decl = (f"package {process.name}_Instance is new {process.instance_of_name}")
-        ri_list = [(f"RI{settings.SEPARATOR}{sig['name']}", sig['name'])
-                   for sig in process.output_signals]
-        if has_cs:
-            ri_list.append(("Check_Queue", "Check_Queue"))
-        ri_list.extend([(f"RI{settings.SEPARATOR}{proc.inputString}", proc.inputString)
-                        for proc in process.procedures if proc.external])
-        ri_list.extend([(f"set_{timer}", f"set_{timer}") for timer in process.timers])
-        ri_list.extend([(f"reset_{timer}", f"reset_{timer}") for timer in process.timers])
-        ri_inst = [f"{ri[0]} => {process.name.title()}_RI.{ri[1]}" for ri in ri_list]
-        if ri_inst or has_context_params:
-            pkg_decl += " ("
-        if ri_inst:
-            pkg_decl += f'{", ".join(ri_inst)}'
-        if has_context_params:
-            if ri_inst:
-                pkg_decl += ", "
-            # Add instance-value of the context parameters
-            pkg_decl += f"{process.instance_of_name}_ctxt => {process.name}_ctxt"
-        if ri_inst or has_context_params:
-            pkg_decl += ")"
-        nim_decl_template.append(f"{pkg_decl}")
-        nim_decl_template.append(
-            f"function Get_State return chars_ptr "
-            f"is ({process.name}_RI.To_C_Pointer ({process.name}_Instance.{settings.LPREFIX}.state'Img))"
-            f" with Export, Convention => C, "
-            f'Link_Name => "{process.name.lower()}_state"')
-
-        # Expose Execute_Transition, needed by the simulator to execute continuous signals
-        nim_decl_template.extend([
-            f'proc Execute_Transition (Id : asn1SccSint): void =',
-            f'{process.name}_Instance.Execute_Transition(Id)',
-            'return',
-            '# end Execute_Transition'])
-        nim_decl_template.append(f'const CS_Only = {process.name}_Instance.CS_Only')
+        pass
+        # pkg_decl = (f"package {process.name}_Instance is new {process.instance_of_name}")
+        # ri_list = [(f"RI{settings.SEPARATOR}{sig['name']}", sig['name'])
+        #            for sig in process.output_signals]
+        # if has_cs:
+        #     ri_list.append(("Check_Queue", "Check_Queue"))
+        # ri_list.extend([(f"RI{settings.SEPARATOR}{proc.inputString}", proc.inputString)
+        #                 for proc in process.procedures if proc.external])
+        # ri_list.extend([(f"set_{timer}", f"set_{timer}") for timer in process.timers])
+        # ri_list.extend([(f"reset_{timer}", f"reset_{timer}") for timer in process.timers])
+        # ri_inst = [f"{ri[0]} => {process.name.title()}_RI.{ri[1]}" for ri in ri_list]
+        # if ri_inst or has_context_params:
+        #     pkg_decl += " ("
+        # if ri_inst:
+        #     pkg_decl += f'{", ".join(ri_inst)}'
+        # if has_context_params:
+        #     if ri_inst:
+        #         pkg_decl += ", "
+        #     # Add instance-value of the context parameters
+        #     pkg_decl += f"{process.instance_of_name}_ctxt => {process.name}_ctxt"
+        # if ri_inst or has_context_params:
+        #     pkg_decl += ")"
+        # nim_decl_template.append(f"{pkg_decl}")
+        # nim_decl_template.append(
+        #     f"function Get_State return chars_ptr "
+        #     f"is ({process.name}_RI.To_C_Pointer ({process.name}_Instance.{settings.LPREFIX}.state'Img))"
+        #     f" with Export, Convention => C, "
+        #     f'Link_Name => "{process.name.lower()}_state"')
+        #
+        # # Expose Execute_Transition, needed by the simulator to execute continuous signals
+        # nim_decl_template.extend([
+        #     f'proc Execute_Transition (Id : asn1SccSint): void =',
+        #     f'{process.name}_Instance.Execute_Transition(Id)',
+        #     'return',
+        #     '# end Execute_Transition'])
+        # nim_decl_template.append(f'const CS_Only = {process.name}_Instance.CS_Only')
 
     else:
         nim_decl_template.extend([f'proc Execute_Transition (Id : asn1SccSint): void'])
@@ -1064,6 +1072,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                         code.append('goto Next_Transition')
                         sep = 'elif '
                         taste_template.extend(code)
+                        nim_decl_template.extend(loc)
                     done.append(statename)
                     taste_template.append('# end if')  # inner if
                     taste_template.append('# end if')  # substate if
@@ -1213,7 +1222,7 @@ def _call_external_function(output, **kwargs) -> str:
             p_code, p_id, p_local = expression(param, readonly=1)
             code.extend(p_code)
             local_decl.extend(p_local)
-            code.append(f'RESET_{p_id}')
+            code.append(f'RESET_{p_id}()')
             continue
         elif signal_name.lower() == 'set_timer':
             # built-in operator for setting a timer: SET(1000, timer_name)
@@ -1228,7 +1237,7 @@ def _call_external_function(output, **kwargs) -> str:
             tmp_id = 'tmp' + str(out['tmpVars'][0])
             local_decl.append(f'var {tmp_id} : {settings.ASN1SCC}T_UInt32')
             code.append(f'{tmp_id} = {t_val}')
-            code.append(f"SET_{p_id} ({tmp_id})")
+            code.append(f"discard SET_{p_id} ({tmp_id})")
             continue
         proc, out_sig = None, None
         try:

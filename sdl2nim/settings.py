@@ -4,6 +4,7 @@ PROCESS_NAME = ""
 VARIABLES = {}
 MONITORS = {}
 LOCAL_VAR = {}
+SYNONYMS = set()
 TYPES = None
 PROCEDURES = []
 OUT_SIGNALS = []

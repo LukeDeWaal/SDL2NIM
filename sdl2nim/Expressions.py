@@ -1311,13 +1311,16 @@ def _string_literal(primary, **kwargs):
 @expression.register(ogAST.PrimConstant)
 def _constant(primary, **kwargs):
     ''' Generate code for a reference to an ASN.1 constant '''
-    if primary.constant_c_name == 'pi':
-        return [], str(primary.constant_c_name), [f'const {primary.constant_c_name} = {primary.constant_value}']
+    if primary.constant_c_name in settings.SYNONYMS:
+        return [], str(primary.constant_c_name), []
     else:
-        if len(settings.ASNMODULES) == 1:
-            return [], f"{settings.ASNMODULES[0]}.{str(primary.constant_c_name)}", []
+        if primary.constant_c_name == 'pi':
+            return [], str(primary.constant_c_name), [f'const {primary.constant_c_name} = {primary.constant_value}']
         else:
-            return [], str(primary.constant_c_name), [] # TODO: Ambiguous Names like 'low' needto have the dataview module prepended. Find right dataview when multiple present.
+            if len(settings.ASNMODULES) == 1:
+                return [], f"{settings.ASNMODULES[0]}.{str(primary.constant_c_name)}", []
+            else:
+                return [], str(primary.constant_c_name), [] # TODO: Ambiguous Names like 'low' needto have the dataview module prepended. Find right dataview when multiple present.
 
 
 @expression.register(ogAST.PrimMantissaBaseExp)
