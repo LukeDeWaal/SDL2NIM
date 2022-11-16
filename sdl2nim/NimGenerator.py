@@ -139,7 +139,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         process_instance = process
 
     options = kwargs.get('options', {})
-    output_dir = options['output_dir']
+    output_dir = options.get('output_dir', default='.')
 
     settings.PROCESS_NAME = process.name
 
@@ -1281,7 +1281,7 @@ def _call_external_function(output, **kwargs) -> str:
                     # local_decl.extend(debug_trace())
                     local_decl.append(f'var {tmp_id} : {typename}')
                     basic_param = find_basic_type(param_type)
-                    if basic_param.kind.startswith('asn1SccSint'):
+                    if basic_param.kind.startswith('Integer'):
                         p_id = f"{typename} ({p_id})"
                     if isinstance(param,
                                   (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)):
@@ -1361,16 +1361,16 @@ def _call_external_function(output, **kwargs) -> str:
                     else:
                         param_str = array_content(param, param_str, basic_param)
 
-                elif isinstance(param, ogAST.PrimVariable):
-                    param_str = f'addr {param_str}'
-
                 elif isinstance(param, (ogAST.PrimReal, ogAST.PrimInteger, ogAST.PrimBoolean)):
                     param_str = f"({param_str}).{type_name(param_type)}"
 
-                if param.is_raw:
+                if isinstance(param, (ogAST.PrimVariable, ogAST.PrimIndex, ogAST.PrimSelector)):
+                    param_str = f'addr {param_str}'
+                else:
                     p_local.append(f"var tmp_param_{param.tmpVar}: {type_name(param_type)}")
                     p_code.append(f"tmp_param_{param.tmpVar} = {param_str}")
                     param_str = f"addr tmp_param_{param.tmpVar}"
+
 
                 if type_name(param.exprType) == type_name(proc.fpar[idx]['type']):
                     pass
@@ -1433,6 +1433,7 @@ def _task_forloop(task, **kwargs):
     if task.comment:
         stmt.extend(traceability(task.comment))
     stmt.extend(traceability(task))
+
     for loop in task.elems:
         if loop['range']:
             start_str, stop_str = '0.asn1SccSint', ''
@@ -1628,8 +1629,10 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
                                     postfix = f'.arr[0 ..< {constant.exprType.Min}]'
                                 elif isinstance(constant, ogAST.PrimStringLiteral) and qbty.kind == 'IA5StringType':
                                     postfix = f'[0 ..< {constant.exprType.Min}]'
-                                elif constant.expr.is_raw:
-                                    postfix = '.arr'
+                                else:
+                                    if (hasattr(constant, 'expr') and constant.expr.is_raw) or (constant.is_raw):
+                                        postfix = '.arr'
+
                                 code.extend([
                                     f"tmp_{actual_type}_{dec.tmpVar}{postfix} = {ans_str}"
                                 ])

@@ -74,7 +74,7 @@ def expression(expr):
 @expression.register(ogAST.PrimVariable)
 def _primary_variable(prim, **kwargs):
     exists = var_exists(prim.value[0].lower(), settings.VARIABLES)
-    if (not exists) or is_local(prim.value[0], settings.LOCAL_VAR):  # Local Variable Access
+    if (not exists) or is_local(prim.value[0].lower(), settings.LOCAL_VAR):  # Local Variable Access
         sep = ''
     else:  # Global Variable Access
         sep = settings.LPREFIX + '.'
@@ -538,6 +538,7 @@ def _basic_operators(expr, **kwargs):
     ltype = type_name(expr.left.exprType)
     rtype = type_name(expr.right.exprType)
 
+
     if lbty.kind.startswith('Integer') and rbty.kind.startswith('Integer') and expr.operand == '/':
         operand = 'div'
     elif expr.operand == 'rem':
@@ -579,6 +580,8 @@ def _basic_operators(expr, **kwargs):
                                                              cast=cast)
 
     else:
+        left_str = f"({left_str}).{ltype}"
+        right_str = f"({right_str}).{rtype}"
         nim_string = '({left} {op} {right})'.format(left=left_str,
                                                     op=operand,
                                                     right=right_str)
