@@ -86,7 +86,7 @@ def _primary_variable(prim, **kwargs):
 
 @expression.register(ogAST.PrimFPAR)
 def _prim_fpar(prim, **kwargs):
-    return [], f'{prim.value[0]}[]', []
+    return [], f'{prim.value[0].capitalize()}[]', []
 
 @expression.register(ogAST.PrimCall)
 def _prim_call(prim, **kwargs):
@@ -180,6 +180,8 @@ def _prim_call(prim, **kwargs):
         local_decl.extend(local_var)
         if min_length == max_length and not isinstance(exp, ogAST.PrimSubstring):
             nim_string += min_length  # f"len({param_str}.arr)"
+        elif min_length == max_length and isinstance(exp, ogAST.PrimSubstring):
+            nim_string += f"{len(exp.value[1]['substring'])}"
         else:
             nim_string += f"({param_str}).nCount"
 
@@ -1147,6 +1149,8 @@ def _expr_in(expr, **kwargs):
     stmts, local_decl = [], []
     nim_string = ""
 
+    expr.left.expected_type = expr.right.exprType
+
     left_stmts, left_str, left_local = expression(expr.left, readonly=1)
     right_stmts, right_str, right_local = expression(expr.right, readonly=1)
 
@@ -1164,13 +1168,8 @@ def _expr_in(expr, **kwargs):
         size = expr.left.exprType.Max
 
         if isinstance(expr.left.value[0], ogAST.PrimSequence):
-            local_decl.append(f'var tmp{expr.tmpVar} : array[ {size} , {sort} ] = [{left_str}]')
-            c = 0
-            for idx, val in enumerate(expr.left.value):
-                sz = len(val.value.keys())
-                for i in range(sz):
-                    left_stmts[c] = left_stmts[c] % f"tmp{expr.tmpVar}[{idx}]"
-                    c += 1
+            local_decl.append(f'var tmp{expr.tmpVar} : array[ {size} , {sort} ]')
+            stmts.append(f"tmp{expr.tmpVar} = [{left_str}]")
             nim_string = f"({right_str} in tmp{expr.tmpVar})"
         else:
 
@@ -1312,7 +1311,10 @@ def _constant(primary, **kwargs):
     if primary.constant_c_name == 'pi':
         return [], str(primary.constant_c_name), [f'const {primary.constant_c_name} = {primary.constant_value}']
     else:
-        return [], primary.exprType.AsnFile.split('.')[0] + '.' + str(primary.constant_c_name), []
+        if len(settings.ASNMODULES) == 1:
+            return [], f"{settings.ASNMODULES[0]}.{str(primary.constant_c_name)}", []
+        else:
+            return [], str(primary.constant_c_name), [] # TODO: Ambiguous Names like 'low' needto have the dataview module prepended. Find right dataview when multiple present.
 
 
 @expression.register(ogAST.PrimMantissaBaseExp)

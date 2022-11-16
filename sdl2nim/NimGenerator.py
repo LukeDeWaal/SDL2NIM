@@ -231,96 +231,112 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
         ctxt = (f'var {settings.LPREFIX}* : {settings.ASN1SCC}{settings.PROCESS_NAME.capitalize()}_Context = {settings.ASN1SCC}{process.name.capitalize()}_Context('
                 'init_done: false, ')
-        initial_values = []
-        post_actions = []
-        local_tmpvar_count = 0
-        # some parts of the context may have initial values
-        for var_name, (var_type, def_value) in process.variables.items():
-            if var_name in process.aliases.keys():
-                # aliases are not part of the context
-                continue
-            if def_value:
-                # Expression must be a ground expression, i.e. must not
-                # require temporary variable to store computed result
-                dst, dstr, dlocal = expression(def_value)
-                varbty = find_basic_type(var_type)
-                variable_type = type_name(var_type)
 
-                if isinstance(def_value, ogAST.PrimEmptyString) or not dstr:
-                    continue
 
-                if (varbty.kind.startswith('Integer') or varbty.kind.startswith(f'{settings.ASN1SCC}Sint')) and \
-                        isinstance(def_value, (ogAST.PrimOctetStringLiteral,
-                                               ogAST.PrimBitStringLiteral)):
-                    dstr = str(def_value.numeric_value)
+        def process_uninitialized_sequence(var_name, var_type):
+            vbty = find_basic_type(var_type)
+            T = type_name(var_type)
+            if vbty.kind.startswith('Choice'):
+                child = list(vbty.Children.keys())[0]
+                return f"{var_name}: {T}(u: {T}_unchecked_union(), kind: {type_name(var_type, use_prefix=False)}_{vbty.Children[child].EnumID})"
 
-                elif varbty.kind in ('SequenceOfType',
-                                     'OctetStringType',
-                                     'BitStringType',
-                                     'IA5StringType'):
+            elif vbty.kind.startswith('SequenceType'):
+                if hasattr(vbty, 'Children'):
+                    result = []
+                    for name, child in vbty.Children.items():
+                        bty = child.type
+                        name = name.replace("-", "_")
+                        out = process_uninitialized_sequence(name, bty)
+                        if out:
+                            result.append(out)
 
-                    if isinstance(def_value, ogAST.PrimStringLiteral):
-
-                        if hasattr(def_value, 'hexstring') and len(def_value.hexstring) > 0:
-                            S = len(def_value.hexstring)
-                        elif hasattr(def_value, 'hexstring') and len(def_value.hexstring) == 0:
-                            S = 1
-                        else:
-                            S = len(def_value.value)-2
-                    else:
-                        S = len(def_value.value)
-
-                    if varbty.kind == 'IA5StringType':
-                        dstr = ia5string_raw(def_value)
-                        context_decl.extend([
-                            f"var tmp_{var_name}_{local_tmpvar_count}: {variable_type}",
-                            f"tmp_{var_name}_{local_tmpvar_count}[0 ..< {S}] = {dstr}"
-                        ])
-                    else:
-                        dstr = array_content(def_value, dstr, varbty)
-                        context_decl.extend([
-                            f"var tmp_{var_name}_{local_tmpvar_count}: {variable_type}",
-                            f"tmp_{var_name}_{local_tmpvar_count}.arr[0 ..< {S}] = {dstr}"
-                        ])
-                        if varbty.Min != varbty.Max:
-                            context_decl.append(f"tmp_{var_name}_{local_tmpvar_count}.nCount = ({S}).cint",)
-
-                    dstr = f"tmp_{var_name}_{local_tmpvar_count}"
-                    local_tmpvar_count += 1
-
-                # elif varbty.kind == 'IA5StringType':
-                #     dstr = ia5string_raw(def_value)
-
-                elif varbty.kind == 'EnumeratedType':
-                    #dstr = f'{variable_type.replace("-", "_")}_{dstr}'
-                    pass
-
-                # if isinstance(def_value, (ogAST.PrimChoiceItem, ogAST.PrimSequence)):
-                #
-                #     if dst:  # Hacky way to initialize anonymous Choice types
-                #         while dst and "%" in dst[0]:
-                #             post_actions.append(dst.pop(0) % (settings.LPREFIX + "." + var_name))
-                #         dst = []
-
-                assert not dst and not dlocal, \
-                    'DCL: Expecting a ground expression'
-                initial_values.append(f'{var_name}: {dstr}')
+                    return f"{var_name}: {T}({', '.join(result)})"
+                else:
+                    return f"{var_name}: {T}()"
 
             else:
-                vbty = find_basic_type(var_type)
+                return "" # f"{var_name}: 0.{T}"
 
-                if vbty.kind.startswith('Choice'):
-                    child = list(vbty.Children.keys())[0]
-                    T = type_name(var_type)
-                    initial_values.append(
-                        f"{var_name}: {T}(u: {T}_unchecked_union(), kind: {type_name(var_type, use_prefix=False)}_{vbty.Children[child].EnumID})"
-                    )
 
+        def get_initial_values(initial_values = None):
+
+            if initial_values is None:
+                initial_values = []
+
+            local_tmpvar_count = 0
+            # some parts of the context may have initial values
+            for var_name, (var_type, def_value) in process.variables.items():
+                if var_name in process.aliases.keys():
+                    # aliases are not part of the context
+                    continue
+                if def_value:
+                    # Expression must be a ground expression, i.e. must not
+                    # require temporary variable to store computed result
+                    dst, dstr, dlocal = expression(def_value)
+                    varbty = find_basic_type(var_type)
+                    variable_type = type_name(var_type)
+
+                    if isinstance(def_value, ogAST.PrimEmptyString) or not dstr:
+                        continue
+
+                    if (varbty.kind.startswith('Integer') or varbty.kind.startswith(f'{settings.ASN1SCC}Sint')) and \
+                            isinstance(def_value, (ogAST.PrimOctetStringLiteral,
+                                                   ogAST.PrimBitStringLiteral)):
+                        dstr = str(def_value.numeric_value)
+
+                    elif varbty.kind in ('SequenceOfType',
+                                         'OctetStringType',
+                                         'BitStringType',
+                                         'IA5StringType'):
+
+                        if isinstance(def_value, ogAST.PrimStringLiteral):
+
+                            if hasattr(def_value, 'hexstring') and len(def_value.hexstring) > 0:
+                                S = len(def_value.hexstring)
+                            elif hasattr(def_value, 'hexstring') and len(def_value.hexstring) == 0:
+                                S = 1
+                            else:
+                                S = len(def_value.value) - 2
+                        else:
+                            S = len(def_value.value)
+
+                        if varbty.kind == 'IA5StringType':
+                            dstr = ia5string_raw(def_value)
+                            context_decl.extend([
+                                f"var tmp_{var_name}_{local_tmpvar_count}: {variable_type}",
+                                f"tmp_{var_name}_{local_tmpvar_count}[0 ..< {S}] = {dstr}"
+                            ])
+                        else:
+                            dstr = array_content(def_value, dstr, varbty)
+                            context_decl.extend([
+                                f"var tmp_{var_name}_{local_tmpvar_count}: {variable_type}",
+                                f"tmp_{var_name}_{local_tmpvar_count}.arr[0 ..< {S}] = {dstr}"
+                            ])
+                            if varbty.Min != varbty.Max:
+                                context_decl.append(f"tmp_{var_name}_{local_tmpvar_count}.nCount = ({S}).cint", )
+
+                        dstr = f"tmp_{var_name}_{local_tmpvar_count}"
+                        local_tmpvar_count += 1
+
+                    elif varbty.kind == 'EnumeratedType':
+                        pass
+
+                    assert not dst and not dlocal, \
+                        'DCL: Expecting a ground expression'
+                    initial_values.append(f'{var_name}: {dstr}')
+
+                else:
+                    value = process_uninitialized_sequence(var_name, var_type)
+                    if value:
+                        initial_values.append(value)
+
+            return initial_values
+
+        initial_values = get_initial_values()
         if initial_values:
             ctxt += ", ".join(initial_values)
         ctxt += ")"
         context_decl.append(ctxt)
-        context_decl.extend(post_actions)
 
         # Add monitors, that are variables that must be set by an external
         # module. They are not part of the global state of the process, and
@@ -410,15 +426,19 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
 
     # Generate the TASTE template
     # ASN Modules
-    try:
-        asn1_custom_type_files = ",\n    ".join([os.path.split(os.path.splitext(dv)[0].replace("-", "_"))[-1] for dv in process.dv.asn1Files])
-        asn1_modules = \
-            'import\n' \
-            f'    asn1crt,\n' \
-            f'    {process.name.lower()}_datamodel,\n' \
-            f'    {asn1_custom_type_files}\n'
-    except TypeError:
-        asn1_modules = '###  No ASN.1 data types are used in this model'
+
+    asn1_modules = \
+        'import\n' \
+        f'    asn1crt,\n' \
+        f'    {process.name.lower()}_datamodel'
+
+    if hasattr(process.DV, 'asn1Files'):
+        settings.ASNMODULES = [os.path.split(os.path.splitext(dv)[0].replace("-", "_"))[-1] for dv in
+                               process.dv.asn1Files]
+        asn1_custom_type_files_str = ",\n    ".join(settings.ASNMODULES)
+        asn1_modules += f",\n    {asn1_custom_type_files_str}\n"
+    else:
+        asn1_modules += '\n\n###  No Custom ASN.1 data types are used in this model\n'
 
     # Import Required Interfaces
     ri_modules = ''
@@ -435,11 +455,12 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
     taste_template = []
     template_str = f'\n\n\n### ------ IMPLEMENTATION ------ ###\n\n'
 
-    for asnfile in process.DV.asn1Files:
-        tmp = asnfile.split(os.path.sep)
-        tmp[-1] = tmp[-1].replace("-","_").replace(".asn", ".c")
-        cfile = os.path.join(os.getcwd(), tmp[-1])
-        template_str += '\n{.compile: "%s"}\n' % cfile
+    if hasattr(process.DV, 'asn1Files'):
+        for asnfile in process.DV.asn1Files:
+            tmp = asnfile.split(os.path.sep)
+            tmp[-1] = tmp[-1].replace("-","_").replace(".asn", ".c")
+            cfile = os.path.join(os.getcwd(), tmp[-1])
+            template_str += '\n{.compile: "%s"}\n' % cfile
 
 
     taste_template.append(template_str)
@@ -527,8 +548,8 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
         proc_code, proc_local = generate(proc)
 
         if proc in process.procedures and len(proc_code) <= 1:
-            args = [f"{par['name']}" for par in proc.fpar]
-            proc_local[-1] += f' = RI{settings.SEPARATOR}{proc.inputString}({", ".join(args)})'
+            args = [f"{par['name'].capitalize()}" for par in proc.fpar]
+            proc_local[-1] += f' = {process.name.lower()}{settings.SEPARATOR}RI{settings.SEPARATOR}{proc.inputString}({", ".join(args)})'
             process_level_decl.extend(proc_local)
             inner_procedures_code.extend(proc_code)
             continue
@@ -663,7 +684,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 # INPUT. The continuous signals are not processed here
                 if trans and all(each.startswith(trans_st)
                                  for trans_st in trans.possible_states):
-                    dest.append(f'p{settings.SEPARATOR}{each}{settings.SEPARATOR}exit')
+                    dest.append(f'p{settings.SEPARATOR}{each}{settings.SEPARATOR}exit()')
 
             if input_def:
                 for inp in input_def.parameters:
@@ -791,7 +812,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                 # Type and instance do not need this declarations, only standalone
                 # processes.
                 nim_decl_template.append(f'###  Synchronous Required Interface "{sig}"')
-                nim_decl_template.append(f'let {procname}* = {process.name}_RI.{process.name.lower()}_RI_{sig}')
+                nim_decl_template.append(f'let {procname}* = {process.name}_RI.{process.name.lower()}{settings.SEPARATOR}RI{settings.SEPARATOR}{sig}')
             # ri_stub_decl.append(f'proc {sig}*{params_spec}')
 
             tmp_c_code = [
@@ -822,7 +843,7 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
                                 fr'echo "\e[31mCannot find {fname}.c\e[0m"',
                                 f"# end block",
                                 '# end try/catch',
-                                f'proc {process.name.lower()}_RI_{sig}*{params_spec} ' + '{.importc: "%s_RI_%s".}' % (process.name.lower(), sig),
+                                f'proc {process.name.lower()}{settings.SEPARATOR}RI{settings.SEPARATOR}{sig}*{params_spec} ' + '{.importc: "%s_RI_%s".}' % (process.name.lower(), sig),
                                 '\n'
                                 ])
 

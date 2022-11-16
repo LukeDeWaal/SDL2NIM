@@ -333,7 +333,7 @@ def procedure_header(proc, SEPARATOR):
         for fpar in proc.fpar:
             typename = type_name(fpar['type'])
             params.append('{name}: ptr {ptype}'.format(
-                    name=fpar.get('name'),
+                    name=fpar.get('name').capitalize(),
                     ptype=typename))
         pi_header += ','.join(params)
         pi_header += '):'
@@ -392,7 +392,7 @@ f"""
 # Tasks
 #
 task asn, "Generate ASN Files":
-    {f'exec "cp {srcpath}/*.asn ."' if srcpath != outpath else '# No need to copy files'}
+    {f'exec "cp {srcpath}/*.asn . 2>/dev/null || :"' if srcpath != outpath else '# No need to copy files'}
     exec "find . -name '*-*.asn' -exec bash -c ' mv $0 ${{0/-/_}}' {{}} \\\;"
     exec "/home/taste/Desktop/tmp_asn/publish/asn1scc --rename-policy 3 -typePrefix {settings.ASN1SCC} -o . -equal -c $(find . -name '*.asn' ! -name '*-*')" 
     exec "find . -name '*-*.asn' -exec bash -c ' rm -rf ${{0/-/_}}' {{}} \\\;"

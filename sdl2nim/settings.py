@@ -10,3 +10,4 @@ OUT_SIGNALS = []
 SEPARATOR = "_0_"
 LPREFIX = u'context'
 ASN1SCC = 'asn1Scc'
+ASNMODULES = []
