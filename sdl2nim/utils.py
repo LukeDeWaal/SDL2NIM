@@ -244,21 +244,35 @@ def array_content(prim, values, asnty, pad_zeros):
         else:
             return values
     elif isinstance(prim, ogAST.PrimSequenceOf):
+
+
+
         if hasattr(asnty, 'type'):
             T = type_name(asnty.type)
-            need_cast = __find_basic_type(settings.TYPES,asnty.type).kind.startswith('Integer')
+            bty = __find_basic_type(settings.TYPES, asnty.type)
         elif hasattr(prim, 'expected_type'):
             T = type_name(prim.expected_type)
-            need_cast = __find_basic_type(settings.TYPES, asnty).kind.startswith('Integer')
+            bty = __find_basic_type(settings.TYPES, prim.expected_type)
         else:
             T = type_name(prim.exprType)
-            need_cast = __find_basic_type(settings.TYPES, asnty).kind.startswith('Integer')
+            bty = __find_basic_type(settings.TYPES, prim.exprType)
+
+        need_cast = bty.kind.startswith('Integer')
+        is_basic = bty.kind in  ('IntegerType',
+                          'Integer32Type',
+                          'IntegerU8Type',
+                          'BooleanType',
+                          'EnumeratedType',
+                          'ChoiceEnumeratedType')
 
         split_vals = split_with_brackets(values, ",", ["[]", "()"])
         if need_cast:
             split_vals = [f"{s}.{T}" for s in split_vals]
         if pad_zeros:
-            split_vals += [f"{T}()" for _ in range(int(float(prim.expected_type.Max)) - len(split_vals))]
+            if not is_basic:
+                split_vals += [f"{T}()" for _ in range(int(float(asnty.Max)) - len(split_vals))]
+            else:
+                split_vals += [f"0.{T}" for _ in range(int(float(asnty.Max)) - len(split_vals))]
     else:
         try:
             T = type_name(asnty.type)

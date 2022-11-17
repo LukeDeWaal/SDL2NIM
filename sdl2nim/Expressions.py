@@ -958,7 +958,7 @@ def _bitwise_operators(expr, **kwargs):
     elif isinstance(expr, ogAST.ExprImplies):
         nim_string = f'({left_str} {operand} {right_str})'
     else:
-        nim_string = f'({left_str} {operand}{expr.shortcircuit} {right_str})'
+        nim_string = f'({left_str} {operand} {right_str})' # {expr.shortcircuit}
 
     code.extend(left_stmts)
     code.extend(right_stmts)
@@ -1107,7 +1107,13 @@ def _append(expr, **kwargs):
                 f"tmp{expr.tmpVar}.arr[tmp{expr.left.tmpVar}.nCount ..< tmp{expr.left.tmpVar}.nCount + {len(expr.right.value)}] = {right_arr}"
             ]
         else:
-            raise ValueError("Expected at least one SeqOf")
+            left_size = int(float(expr.left.exprType.Max))
+            right_size = int(float(expr.right.exprType.Max))
+            size = left_size + right_size
+            concat = [
+                f"tmp{expr.tmpVar}.arr[0 ..< {left_size}] = {left_arr}",
+                f"tmp{expr.tmpVar}.arr[{left_size} ..< {size}] = {right_arr}",
+            ]
 
         stmts.append(f"tmp{expr.tmpVar}.nCount = {size}")
         stmts.extend(concat)
@@ -1345,6 +1351,7 @@ def _conditional(cond, **kwargs):
     ''' Return string and statements for conditional expressions '''
     stmts = []
 
+    bty = find_basic_type(cond.exprType)
     tmp_type = type_name(cond.exprType)
 
     if tmp_type == 'cstring' or tmp_type.startswith('String'):
@@ -1383,7 +1390,12 @@ def _conditional(cond, **kwargs):
     if not tmp_type.startswith('String') and tmp_type != 'cstring' and isinstance(cond.value['then'],
                                                                                   (ogAST.PrimSequenceOf,
                                                                                    ogAST.PrimStringLiteral)):
-        then_str = array_content(cond.value['then'], then_str, basic_then)
+        if cond.value['then'].is_raw:
+            then_str = array_content(cond.value['then'], then_str, basic_then, pad_zeros=True)
+            then_str = f"{tmp_type}(nCount: {len(cond.value['then'].value)}, arr: {then_str})"
+        else:
+            then_str = cond.value['then'].value[0]
+
     if isinstance(cond.value['then'], ogAST.ExprAppend):
         then_len = append_size(cond.value['then'])
         stmts.append("tmp{idx} = {then_str}"

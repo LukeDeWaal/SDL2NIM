@@ -243,8 +243,17 @@ def _process(process, simu=False, instance=False, taste=False, **kwargs):
             vbty = find_basic_type(var_type)
             T = type_name(var_type)
             if vbty.kind.startswith('Choice'):
+                basetype = type_name(var_type, use_prefix=False)
+                for key, value in settings.TYPES.items():
+                    if key.replace("-", "_") == basetype:
+                        ntype = value
+                        break
+                else:
+                    ntype = settings.TYPES[basetype]
+                if hasattr(ntype.type, 'ReferencedTypeName'):
+                    basetype = ntype.type.ReferencedTypeName
                 child = list(vbty.Children.keys())[0]
-                return f"{var_name}: {T}(u: {T}_unchecked_union(), kind: {type_name(var_type, use_prefix=False)}_{vbty.Children[child].EnumID})"
+                return f"{var_name}: {T}(u: {settings.ASN1SCC}{basetype}_unchecked_union(), kind: {basetype}_{vbty.Children[child].EnumID})"
 
             elif vbty.kind.startswith('SequenceType'):
                 if hasattr(vbty, 'Children'):
@@ -1315,20 +1324,20 @@ def _call_external_function(output, **kwargs) -> str:
                             code.extend(tmpstr)
 
 
-                    if isinstance(param, ogAST.ExprAppend):
-                        # Process Append constructs properly when they are
-                        # used as raw params (e.g. callme(a//b//c))
-                        # TODO: ogAST.PrimSubstring seem to be missing
-                        # Check the template in def _conditional
-                        app_len = append_size(param)
-                        # code.extend(debug_trace())
-                        code.append(f'{tmp_id}[0 ..< {app_len}] = {p_id}')
-                        if basic_param.Min != basic_param.Max:
-                            # Append should only apply to this case, i.e.
-                            # types of varying length...
-                            # code.append(f'{tmp_id}.len = {app_len};')
-                            pass
-                    elif isinstance(param, (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)) \
+                    # if isinstance(param, ogAST.ExprAppend):
+                    #     # Process Append constructs properly when they are
+                    #     # used as raw params (e.g. callme(a//b//c))
+                    #     # TODO: ogAST.PrimSubstring seem to be missing
+                    #     # Check the template in def _conditional
+                    #     app_len = append_size(param)
+                    #     # code.extend(debug_trace())
+                    #     code.append(f'{tmp_id}[0 ..< {app_len}] = {p_id}')
+                    #     if basic_param.Min != basic_param.Max:
+                    #         # Append should only apply to this case, i.e.
+                    #         # types of varying length...
+                    #         # code.append(f'{tmp_id}.len = {app_len};')
+                    #         pass
+                    if isinstance(param, (ogAST.PrimSequenceOf, ogAST.PrimStringLiteral)) \
                             and not basic_param.kind.startswith('asn1SccSint'):
                         pass # Already appended code
                     else:
@@ -1655,12 +1664,13 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
 
                         if question_basic in ('IA5StringType', ):
                             ptr = False
+
                         else:
                             ptr = True
                             if ans_str != f"tmp_{actual_type}_{dec.tmpVar}":
                                 # if constant.is_raw:
                                     # local_decl.append(f"var tmp_{actual_type}_{dec.tmpVar}: {actual_type}")
-                                if int(cbty.Min) > 1 or int(cbty.Max) > 1:
+                                if hasattr(cbty, 'Min') and hasattr(cbty, 'Max') and (int(cbty.Min) > 1 or int(cbty.Max) > 1):
                                     postfix = ''
                                     if isinstance(constant, ogAST.PrimStringLiteral):
                                         postfix = f'.arr[0 ..< {constant.exprType.Min}]'
@@ -1944,7 +1954,8 @@ def _floating_label(label, **kwargs):
             code.insert(idx, line)
         local_decl.extend(local_trans)
     else:
-        code.append('return')
+        code[code.index('pass')] = 'return'
+        # code.append('return')
     return code, local_decl
 
 
