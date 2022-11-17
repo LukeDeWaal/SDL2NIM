@@ -5,6 +5,7 @@ VARIABLES = {}
 MONITORS = {}
 LOCAL_VAR = {}
 SYNONYMS = set()
+LOOP_VARS = set()
 TYPES = None
 PROCEDURES = []
 OUT_SIGNALS = []

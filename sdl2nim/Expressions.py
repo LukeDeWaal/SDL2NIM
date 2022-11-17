@@ -12,7 +12,7 @@ from opengeode.Helper import find_basic_type as __find_basic_type
 
 from . import settings
 
-from .utils import not_implemented_error, var_exists, is_local, is_numeric, child_spelling, ia5string_raw
+from .utils import not_implemented_error, var_exists, is_local, is_numeric, is_loopvar, child_spelling, ia5string_raw
 from .utils import string_payload as __string_payload
 from .utils import array_content as __array_content
 from .utils import type_name as __type_name
@@ -358,6 +358,7 @@ def _prim_call(prim, **kwargs):
         nim_string += f'p{settings.SEPARATOR}{func}('
         # Take all params and join them with commas
         list_of_params = []
+        counter = 0
         for idx, param in enumerate(params):
             # Expected basic type of the parameter
             param_type = p.fpar[idx]['type']
@@ -376,16 +377,25 @@ def _prim_call(prim, **kwargs):
                 else:
                     param_str = array_content(param, param_str, basic_param)
 
-            elif isinstance(param, ogAST.PrimVariable):
-                param_str = f'addr {param_str}'
+            elif isinstance(param, ogAST.PrimFPAR):
+                if param_str.endswith('[]'):
+                    param_str = param_str[:-2]
+
+            elif isinstance(param, (ogAST.PrimVariable, ogAST.PrimSelector, ogAST.PrimConstant)) and not is_loopvar(param):
+                param_str = f'addr {param_str}' # TODO: Need unsafeaddr in case param is an iterator variable. Find workaround for this as it is unsafe (duh).
 
             elif isinstance(param, (ogAST.PrimReal, ogAST.PrimInteger, ogAST.PrimBoolean)):
                 param_str = f"({param_str}).{type_name(param_type)}"
 
-            if param.is_raw:
-                local_decl.append(f"var tmp_param_{param.tmpVar}: {type_name(param_type)}")
-                param_stmt.append(f"tmp_param_{param.tmpVar} = {param_str}")
-                param_str = f"addr tmp_param_{param.tmpVar}"
+            if param.is_raw or is_loopvar(param):
+                if hasattr(param, 'tmpVar'):
+                    tmpvar_id = param.tmpVar
+                else:
+                    tmpvar_id = f"{prim.tmpVar}_{counter}"
+                    counter += 1
+                local_decl.append(f"var tmp_param_{tmpvar_id}: {type_name(param_type)}")
+                param_stmt.append(f"tmp_param_{tmpvar_id} = {param_str}")
+                param_str = f"addr tmp_param_{tmpvar_id}"
 
             list_of_params.append(param_str)
             stmts.extend(param_stmt)
@@ -758,7 +768,7 @@ def _assign_expression(expr, **kwargs):
                                                       rvar=right_str,
                                                       lstr=rlen))
             else:
-                rlen = f"tmp{expr.right.tmpVar}.nCount"
+                rlen = ''
                 strings.append("{lvar} = {rvar}".format(lvar=left_str,
                                                       rvar=right_str,
                                                       lstr=rlen))
@@ -843,7 +853,7 @@ def _assign_expression(expr, **kwargs):
 
         strings.append(f"{left_str} = {res}")
 
-    elif basic_left.kind in ('SequenceType', 'ChoiceType'):
+    elif basic_left.kind in ('ChoiceType', ):
         # No direct assignment, only assigning members separately
         # First we assign empty object (to zero all memory)
         # Then the member assignments happen
@@ -856,6 +866,7 @@ def _assign_expression(expr, **kwargs):
 
     code.extend(left_stmts)
     code.extend(right_stmts)
+
     code.extend(strings)
     local_decl.extend(left_local)
     local_decl.extend(right_local)

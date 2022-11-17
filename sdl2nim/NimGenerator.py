@@ -12,7 +12,7 @@ from opengeode import ogAST, Helper
 
 from .utils import (not_implemented_error,
                     traceability, ia5string_raw,
-                    is_numeric, format_nim_code,
+                    is_numeric, is_loopvar, format_nim_code,
                     generate_nim_definitions)
 
 from .Expressions import (expression, array_content,
@@ -1488,6 +1488,7 @@ def _task_forloop(task, **kwargs):
             # case of form: FOR x in SEQUENCE OF
             # Add iterator to the list of local variables
             settings.LOCAL_VAR.update({loop['var']: (loop['type'], None)})
+            settings.LOOP_VARS.add(loop['var'])
 
             list_stmt, list_str, list_local = expression(loop['list'])
             basic_type = find_basic_type(loop['list'].exprType)
@@ -1495,6 +1496,7 @@ def _task_forloop(task, **kwargs):
 
             stmt.extend(list_stmt)
             local_decl.extend(list_local)
+            # local_decl.append(f"var tmp_{loop['var']}: {type_name(loop['type'])}")
             # stmt.extend([f'var {loop["var"]}_idx;', f'var {loop["var"]}_val;'])
             stmt.extend([f'for {loop["var"]} in {list_payload}:', ])
         try:

@@ -12,6 +12,7 @@ __all__ = ['not_implemented_error',
            'is_numeric',
            'traceability',
            'is_local',
+           'is_loopvar',
            'string_payload',
            'array_content',
            'type_name',
@@ -103,6 +104,16 @@ def is_local(var, local_var):
     ''' Check if a variable is in the global context or in a local scope
         Typically needed to select the right prefix to use '''
     return var in (loc for loc in local_var.keys())
+
+
+def is_loopvar(expr):
+    if isinstance(expr, (ogAST.PrimVariable,)):
+        return expr.value[0] in settings.LOOP_VARS
+    else:
+        try:
+            return any(is_loopvar(v) for v in expr.value)
+        except AttributeError:
+            return False
 
 
 def split_with_brackets(string: str, delim: str, brackets: list):
