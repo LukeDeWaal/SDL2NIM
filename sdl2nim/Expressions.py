@@ -1491,6 +1491,8 @@ def _sequence(seq, **kwargs):
                 value_str = str(value.numeric_value)
             elif elem_bty.kind == 'IA5StringType':
                 value_str = ia5string_raw(value, fill=True)
+            elif isinstance(value, ogAST.PrimSequenceOf):
+                value_str = f"{elem_typename}(arr: {array_content(value, value_str, elem_bty, pad_zeros=True)})"
             else:
                 if isinstance(value, ogAST.PrimStringLiteral):
                     S = len(value_str.split(','))
@@ -1530,20 +1532,24 @@ def _sequence(seq, **kwargs):
 def _sequence_of(seqof, **kwargs):
     stmts, local_decl = [], []
     seqof_ty = seqof.exprType
-    try:
-        # asn_type = find_basic_type(settings.TYPES[seqof_ty.ReferencedTypeName].type)
-        sortref = settings.TYPES[seqof.expected_type.ReferencedTypeName]
-        while (hasattr(sortref, "type")):
-            sortref = sortref.type
-        asn_type = find_basic_type(sortref)
-    except AttributeError:
-        asn_type = None
-        min_size, max_size = seqof_ty.Min, seqof_ty.Max
-        if hasattr(seqof, 'expected_type'):
-            sortref = settings.TYPES[seqof.expected_type.ReferencedTypeName]
-            while (hasattr(sortref, "type")):
-                sortref = sortref.type
-            asn_type = find_basic_type(sortref)
+    if hasattr(seqof, 'expected_type'):
+        asn_type = find_basic_type(seqof.expected_type)
+    else:
+        asn_type = find_basic_type(seqof.exprType)
+    # try:
+    #     # asn_type = find_basic_type(settings.TYPES[seqof_ty.ReferencedTypeName].type)
+    #     sortref = settings.TYPES[seqof.expected_type.ReferencedTypeName]
+    #     while (hasattr(sortref, "type")):
+    #         sortref = sortref.type
+    #     asn_type = find_basic_type(sortref)
+    # except AttributeError:
+    #     asn_type = None
+    #     min_size, max_size = seqof_ty.Min, seqof_ty.Max
+    #     if hasattr(seqof, 'expected_type'):
+    #         sortref = settings.TYPES[seqof.expected_type.ReferencedTypeName]
+    #         while (hasattr(sortref, "type")):
+    #             sortref = sortref.type
+    #         asn_type = find_basic_type(sortref)
     tab = []
     for i in range(len(seqof.value)):
         value = seqof.value[i]
