@@ -1536,6 +1536,12 @@ def _sequence_of(seqof, **kwargs):
         asn_type = find_basic_type(seqof.expected_type)
     else:
         asn_type = find_basic_type(seqof.exprType)
+
+    if hasattr(asn_type, 'type'):
+        elem_type = find_basic_type(asn_type.type)
+    else:
+        elem_type = asn_type
+
     # try:
     #     # asn_type = find_basic_type(settings.TYPES[seqof_ty.ReferencedTypeName].type)
     #     sortref = settings.TYPES[seqof.expected_type.ReferencedTypeName]
@@ -1577,7 +1583,7 @@ def _sequence_of(seqof, **kwargs):
             'ChoiceEnumeratedType')
 
         if isinstance(value, (ogAST.PrimStringLiteral)):
-            item_str = array_content(value, item_str, asn_type or find_basic_type(value.exprType), pad_zeros=True)
+            item_str = array_content(value, item_str, elem_type or find_basic_type(value.exprType), pad_zeros=True)
             if hasattr(bty, 'type') and bty.type.Min != bty.type.Max:
                 S = len(value.inputString.strip("'"))
                 item_str = f"{rbty}(nCount: {S}, arr: {item_str})"
@@ -1585,7 +1591,7 @@ def _sequence_of(seqof, **kwargs):
                 item_str = f"{rbty}(arr: {item_str})"
 
         elif isinstance(value, ogAST.PrimSequenceOf):
-            item_str = array_content(value, item_str, asn_type or find_basic_type(value.exprType), pad_zeros=True)
+            item_str = array_content(value, item_str, elem_type or find_basic_type(value.exprType), pad_zeros=True)
             if hasattr(bty, 'type') and bty.type.Min != bty.type.Max:
                 S = len(value.value)
                 item_str = f"{rbty}(nCount: {S}, arr: {item_str})"

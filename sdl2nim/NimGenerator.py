@@ -1622,6 +1622,8 @@ def _decision(dec, branch_to=None, sep='if ', last='# end if', exitcalls=[], **k
                 op, constant = ans_content  # get the constant
                 if op.operand == '=':
                     operand = '=='
+                elif op.operand == '/=':
+                    operand = '!='
                 else:
                     operand = op.operand
 
